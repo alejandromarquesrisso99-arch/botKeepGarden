@@ -18,8 +18,13 @@ from typing import TYPE_CHECKING
 from . import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
+    import pandas as pd
+
     from .config import Config
     from .data.sources import VenueClient
+    from .genome.catalog import GeneCatalog
+    from .genome.schema import MarketSpec
+    from .types import Timeframe
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -187,6 +192,134 @@ def cmd_data_status(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_catalog(cfg: Config) -> GeneCatalog:
+    """El catálogo efectivo: el de código más el sesgo de ``config/genes.yaml``."""
+    from .genome.catalog import load_catalog
+
+    return load_catalog(cfg.path("config/genes.yaml"))
+
+
+def _candles_for(
+    cfg: Config, market: MarketSpec
+) -> tuple[pd.DataFrame, dict[Timeframe, pd.DataFrame]]:
+    """Velas operativas y de contexto de un mercado, desde la caché."""
+    from typing import cast
+
+    from .data.store import CandleStore, SeriesKey
+
+    store = CandleStore(cache_dir=cfg.path(cfg.storage.cache_dir))
+    base = store.load(SeriesKey(market.venue, market.symbol, market.timeframe))
+    context: dict[Timeframe, pd.DataFrame] = {}
+    for tf in cfg.market.context_timeframes:
+        timeframe = cast("Timeframe", tf)
+        velas = store.load(SeriesKey(market.venue, market.symbol, timeframe))
+        if not velas.empty:
+            context[timeframe] = velas
+    return base, context
+
+
+def cmd_genome_sample(args: argparse.Namespace) -> int:
+    """Siembra genomas nuevos y los enseña, sin tocar el jardín."""
+    import random
+
+    from .config import load_config
+    from .genome.catalog import SEEDABLE_FAMILIES
+    from .genome.random_genome import random_genome
+    from .genome.schema import MarketSpec, genome_hash
+    from .genome.serialize import save_genome
+    from .types import IdeaFamily
+
+    cfg = load_config(args.config)
+    catalog = _load_catalog(cfg)
+    rng = random.Random(args.seed if args.seed is not None else cfg.seed)
+    market = MarketSpec(
+        venue=cfg.market.venue,
+        symbol=args.symbol or cfg.primary_symbol,
+        timeframe=cfg.market.timeframe,
+    )
+    familias = (IdeaFamily(args.family.upper()),) if args.family else SEEDABLE_FAMILIES
+
+    destino = cfg.path(args.save) if args.save else None
+    if destino is not None:
+        destino.mkdir(parents=True, exist_ok=True)
+
+    for i in range(args.count):
+        family = familias[i % len(familias)]
+        genome = random_genome(family, market, cfg, catalog, rng)
+        print(f"\n{genome.describe()}")
+        print(f"  hash: {genome_hash(genome)} · complejidad: {genome.complexity()}")
+        if destino is not None:
+            ruta = save_genome(genome, destino / f"{genome.id}.json")
+            print(f"  guardado en {ruta}")
+    return EXIT_OK
+
+
+def cmd_genome_show(args: argparse.Namespace) -> int:
+    """Lee un genoma, lo valida y lo compila contra las velas en caché."""
+    import numpy as np
+
+    from .config import load_config
+    from .data.indicators import IndicatorCache
+    from .genome.compile import compile_genome
+    from .genome.schema import genome_hash
+    from .genome.serialize import load_genome
+    from .genome.validate import validate_genome
+    from .types import Signal
+
+    cfg = load_config(args.config)
+    catalog = _load_catalog(cfg)
+    genome = load_genome(args.genome)
+
+    print(genome.describe())
+    print(f"\nhash: {genome_hash(genome)} · complejidad: {genome.complexity()}")
+
+    informe = validate_genome(genome, cfg, catalog, strict=False)
+    print(f"validación: {'ok' if informe.ok else 'INVÁLIDO'}")
+    for error in informe.errors:
+        print(f"  error: {error}", file=sys.stderr)
+    for aviso in informe.warnings:
+        print(f"  aviso: {aviso}")
+    if not informe.ok:
+        return EXIT_ERROR
+
+    velas, contexto = _candles_for(cfg, genome.market)
+    if velas.empty:
+        print(
+            f"\nno hay velas de {genome.market.key()} en caché: no se puede compilar.\n"
+            f"  keepgarden data backfill --symbol {genome.market.symbol}"
+        )
+        return EXIT_OK
+
+    cache = IndicatorCache(
+        candles=velas, context=contexto, catalog=catalog, timeframe=genome.market.timeframe
+    )
+    compilado = compile_genome(genome, velas, cache)
+    señales = compilado.signals()
+    operables = len(velas) - compilado.warmup_bars
+
+    from .data.backfill import format_ts, miles
+
+    print(f"\nvelas      {miles(len(velas))} · {format_ts(int(velas.index[0]))} → "
+          f"{format_ts(int(velas.index[-1]))}")
+    print(f"calentamiento {miles(compilado.warmup_bars)} velas "
+          f"({miles(max(0, operables))} operables)")
+    for signal in (Signal.ENTER_LONG, Signal.EXIT_LONG):
+        n = int((señales == signal).sum())
+        cada = f" · una cada {operables // n} velas" if n else ""
+        print(f"{signal!s:<12} {miles(n)}{cada}")
+
+    for gene in genome.features:
+        serie = compilado.feature_arrays[gene.id]
+        validos = serie[np.isfinite(serie)]
+        if validos.size:
+            print(
+                f"  {gene.id:<14} {gene.kind:<14} "
+                f"min {validos.min():>12.4g}  mediana {np.median(validos):>12.4g}  "
+                f"max {validos.max():>12.4g}"
+            )
+    return EXIT_OK
+
+
 def cmd_garden_seed(args: argparse.Namespace) -> int:
     """Siembra la población inicial y crea la base del jardín."""
     raise PendingMilestone("hito 4 (Incubadora y evolución)", "garden seed")
@@ -296,6 +429,22 @@ def build_parser() -> argparse.ArgumentParser:
     ds = data_sub.add_parser("status", help="rango, huecos y anomalías en caché")
     ds.add_argument("--symbol", default=None)
     ds.set_defaults(func=cmd_data_status)
+
+    # -- genome ------------------------------------------------------------ #
+    gen = sub.add_parser("genome", help="genomas: sembrar uno nuevo y examinarlo")
+    gen_sub = gen.add_subparsers(dest="subcommand", metavar="<subcomando>")
+
+    gsam = gen_sub.add_parser("sample", help="siembra genomas nuevos y los enseña")
+    gsam.add_argument("--family", default=None, help="TREND, MEAN_REVERSION, BREAKOUT…")
+    gsam.add_argument("--count", type=int, default=3)
+    gsam.add_argument("--seed", type=int, default=None, help="por defecto, la semilla del jardín")
+    gsam.add_argument("--symbol", default=None)
+    gsam.add_argument("--save", default=None, help="carpeta donde escribir los JSON")
+    gsam.set_defaults(func=cmd_genome_sample)
+
+    gsh = gen_sub.add_parser("show", help="valida y compila un genoma sobre las velas en caché")
+    gsh.add_argument("--genome", required=True, help="ruta a un genoma JSON")
+    gsh.set_defaults(func=cmd_genome_show)
 
     # -- garden ------------------------------------------------------------ #
     garden = sub.add_parser("garden", help="población: sembrar y consultar")
