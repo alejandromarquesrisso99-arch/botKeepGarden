@@ -12,9 +12,14 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 from . import __version__
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .config import Config
+    from .data.sources import VenueClient
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -36,14 +41,150 @@ class PendingMilestone(NotImplementedError):
 # --------------------------------------------------------------------------- #
 
 
+def _progress_printer() -> Callable[[object, int, int], None]:
+    """Traza del backfill: una línea que se reescribe en terminal, o un hilo de
+    líneas cuando la salida va a un archivo."""
+    from .data.backfill import format_ts, miles
+
+    interactive = sys.stdout.isatty()
+    seen = 0
+
+    def progress(key: object, last_ts: int, total: int) -> None:
+        nonlocal seen
+        seen += 1
+        line = f"    {format_ts(last_ts)}   {miles(total)} velas"
+        if interactive:
+            print(f"\r{line}   ", end="", flush=True)
+        elif seen % 20 == 0:
+            print(line, flush=True)
+
+    return progress
+
+
 def cmd_data_backfill(args: argparse.Namespace) -> int:
     """Descarga histórico de velas, reanudable."""
-    raise PendingMilestone("hito 1 (Datos)", "data backfill")
+    from .config import load_config
+    from .data.backfill import (
+        backfill,
+        format_ts,
+        miles,
+        parse_since,
+        series_status,
+        status_lines,
+    )
+    from .data.sources import VenueClient, VenueError
+    from .data.store import CandleStore, SeriesKey
+
+    cfg = load_config(args.config)
+    symbol = args.symbol or cfg.primary_symbol
+    base_tf = args.timeframe or cfg.market.timeframe
+    timeframes = [base_tf]
+    if args.context:
+        timeframes += [tf for tf in cfg.market.context_timeframes if tf != base_tf]
+    since = parse_since(args.since or cfg.market.history_start)
+
+    store = CandleStore(cache_dir=cfg.path(cfg.storage.cache_dir))
+    client = VenueClient(venue=cfg.market.venue)
+
+    _warn_about_fees(client, symbol, cfg)
+
+    print(f"backfill de {symbol} en {cfg.market.venue} desde {format_ts(since)} UTC")
+    everything_ok = True
+    for timeframe in timeframes:
+        key = SeriesKey(cfg.market.venue, symbol, timeframe)
+        print(f"\n  {key}")
+        try:
+            report = backfill(
+                store,
+                client,
+                key,
+                since=since,
+                jump_threshold=cfg.risk.price_jump_anomaly,
+                progress=_progress_printer(),
+            )
+        except VenueError as exc:
+            print(f"\n    el venue falló: {exc}", file=sys.stderr)
+            print(
+                "    lo descargado hasta aquí está guardado: relanza el comando "
+                "para continuar donde se quedó.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+
+        if sys.stdout.isatty():
+            print()
+        if report.up_to_date:
+            print("    ya estaba al día")
+        else:
+            cola = " (incluida historia anterior a la que ya había)" if report.extended_backwards else ""
+            print(f"    {miles(report.fetched)} velas nuevas{cola}")
+        if report.heal.filled:
+            print(f"    {report.heal.filled} velas de relleno en huecos cortos")
+        if report.heal.long_gaps:
+            print(f"    {len(report.heal.long_gaps)} huecos largos marcados, sin rellenar")
+
+        status = series_status(store, key, jump_threshold=cfg.risk.price_jump_anomaly)
+        everything_ok &= status.ok
+        print("\n" + "\n".join(status_lines(status)))
+
+    return EXIT_OK if everything_ok else EXIT_ERROR
+
+
+def _warn_about_fees(client: VenueClient, symbol: str, cfg: Config) -> None:
+    """Avisa si el venue cobra más de lo que el jardín cree.
+
+    Evolucionar contra una fricción irreal produce bots que sólo existen en la
+    configuración. No es motivo para abortar, pero sí para verlo.
+    """
+    try:
+        info = client.market_info(symbol)
+    except Exception:
+        # Un aviso jamás debe tumbar el comando: si el venue no contesta, ya se
+        # quejará el backfill, que es quien sí necesita la red.
+        return
+    real = info.get("taker_fee_bps")
+    configured = cfg.frictions.taker_fee_bps
+    if isinstance(real, (int, float)) and float(real) > float(configured) + 1e-9:
+        print(
+            f"  aviso: {symbol} cobra {real:.1f} bps de taker y la config dice "
+            f"{configured:.1f}. Ajusta frictions.taker_fee_bps o el jardín "
+            f"evolucionará contra una fricción irreal.",
+            file=sys.stderr,
+        )
 
 
 def cmd_data_status(args: argparse.Namespace) -> int:
     """Estado de la caché: rango, número de velas, huecos y anomalías."""
-    raise PendingMilestone("hito 1 (Datos)", "data status")
+    from .config import load_config
+    from .data.backfill import resolve_keys, series_status, status_lines
+    from .data.store import CandleStore
+
+    cfg = load_config(args.config)
+    store = CandleStore(cache_dir=cfg.path(cfg.storage.cache_dir))
+    keys = resolve_keys(store, args.symbol)
+
+    if not keys:
+        donde = f" para {args.symbol}" if args.symbol else ""
+        print(f"no hay velas en caché{donde}.")
+        print("  keepgarden data backfill --symbol BTC/USDT --timeframe 1h")
+        return EXIT_OK
+
+    print(f"caché: {store.root}\n")
+    everything_ok = True
+    for key in keys:
+        status = series_status(store, key, jump_threshold=cfg.risk.price_jump_anomaly)
+        everything_ok &= status.ok
+        print("\n".join(status_lines(status)))
+        print()
+
+    if not everything_ok:
+        print(
+            "hay series con problemas: relanza el backfill para que los huecos "
+            "cortos se rellenen y los largos queden marcados.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    return EXIT_OK
 
 
 def cmd_garden_seed(args: argparse.Namespace) -> int:
@@ -220,7 +361,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _utf8_when_redirected() -> None:
+    """Escribe UTF-8 cuando la salida no es una consola.
+
+    En Windows, redirigir a un archivo usa la codificación local (cp1252), que
+    no sabe escribir ni ``→`` ni ``·`` y revienta a mitad de un informe. En la
+    consola no se toca nada: Python ya habla con ella en Unicode y forzar UTF-8
+    ahí estropearía los acentos en PowerShell 5.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None and not stream.isatty():
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _utf8_when_redirected()
     parser = build_parser()
     args = parser.parse_args(argv)
 
