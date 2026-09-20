@@ -107,13 +107,34 @@ class Pedigree:
             return 0
         return 1 + max((self.generation_depth(p) for p in self.parents_of(bot)), default=-1)
 
+    def co_parents_of(self, bot: BotId) -> set[BotId]:
+        """Los bots con los que ``bot`` ha engendrado algún hijo directo.
+
+        En un jardín donde el cruce y la fusión toman dos padres, haber
+        producido descendencia junto a alguien es una forma de parentesco que no
+        aparece en el árbol de antepasados: dos fundadores sin relación de
+        sangre quedan emparentados en cuanto tienen un hijo común.
+        """
+        out: set[BotId] = set()
+        for child in self.children_of(bot):
+            out.update(p for p in self.parents_of(child) if p != bot)
+        return out
+
     def related(self, a: BotId, b: BotId) -> bool:
-        """¿Comparten algún antepasado o uno desciende del otro?"""
+        """¿Hay parentesco entre los dos?
+
+        Lo hay si comparten algún antepasado, si uno desciende del otro o si han
+        engendrado un hijo juntos. Compartir un descendiente lejano no cuenta:
+        en un jardín con fusiones casi todo acaba confluyendo aguas abajo, y una
+        definición así declararía emparentado a todo el mundo.
+        """
         if a == b:
             return True
         anc_a = self.ancestors(a) | {a}
         anc_b = self.ancestors(b) | {b}
-        return bool(anc_a & anc_b)
+        if anc_a & anc_b:
+            return True
+        return b in self.co_parents_of(a)
 
     def inbreeding_coefficient(self, a: BotId, b: BotId) -> float:
         """Solapamiento de antepasados, en [0, 1] (Jaccard).
