@@ -17,14 +17,7 @@ import inspect
 import pytest
 
 CONTRACT_MODULES = [
-    "keepgarden.genome.compile",
-    "keepgarden.genome.validate",
-    "keepgarden.genome.random_genome",
     "keepgarden.genome.distance",
-    "keepgarden.data.candles",
-    "keepgarden.data.sources",
-    "keepgarden.data.store",
-    "keepgarden.data.indicators",
     "keepgarden.engine.clock",
     "keepgarden.engine.broker",
     "keepgarden.engine.portfolio",
@@ -59,6 +52,14 @@ IMPLEMENTED_MODULES = [
     "keepgarden.genome.serialize",
     "keepgarden.evolution.lineage",
     "keepgarden.gardener.proposals",
+    "keepgarden.data.candles",
+    "keepgarden.data.sources",
+    "keepgarden.data.store",
+    "keepgarden.data.backfill",
+    "keepgarden.data.indicators",
+    "keepgarden.genome.compile",
+    "keepgarden.genome.validate",
+    "keepgarden.genome.random_genome",
 ]
 
 

@@ -40,7 +40,7 @@ historia de la que ya hay en caché.
 
 ---
 
-## Hito 2 — Indicadores y compilación del genoma
+## Hito 2 — Indicadores y compilación del genoma  ✅
 
 Convertir un genoma en una serie de señales.
 
@@ -52,10 +52,15 @@ Convertir un genoma en una serie de señales.
 
 **Aceptación**
 - Test de causalidad automático: para cada indicador, calcularlo sobre
-  `velas[0:n]` y sobre `velas[0:n+50]` da valores idénticos en `[0:n]`.
-- 1.000 genomas aleatorios compilan sin error y pasan la validación.
+  `velas[0:n]` y sobre `velas[0:n+50]` da valores idénticos en `[0:n]`.  ✅
+  (26 indicadores × 2 juegos de parámetros)
+- 1.000 genomas aleatorios compilan sin error y pasan la validación.  ✅
 - Un genoma escrito a mano produce exactamente las señales esperadas sobre una
-  serie sintética (test de oro).
+  serie sintética (test de oro).  ✅
+
+Comando visible: `keepgarden genome sample` siembra bots nuevos y los describe;
+`keepgarden genome show --genome <archivo>` lo valida, lo compila contra las
+velas en caché y dice cuántas señales da y con qué frecuencia.
 
 ---
 

@@ -173,3 +173,71 @@ velas sintéticas de relleno llevan `trades = 0`, igual que el volumen.
 lo sé" de "no hubo ninguna operación", que son cosas muy distintas. Si algún día
 hace falta de verdad, se rellena con una llamada específica al endpoint de
 klines sin tocar el esquema.
+
+---
+
+### D-012 · 2026-09-20 · La línea de un indicador multi-salida es un índice
+
+**Contexto.** MACD, BBANDS y KELTNER producen tres series cada uno y el genoma
+tiene que decir cuál mira. Los parámetros de un `FeatureGene` son números
+(`dict[str, float]`, normalizados a `float` para que el hash del genoma sea
+estable), así que no cabe un nombre de línea.
+
+**Decisión.** `line` es un parámetro más del catálogo, con rango 0–2, y es el
+**índice** dentro de `IndicatorSpec.multi_output`. `IndicatorSpec.line_name`
+traduce índice a nombre para quien lo necesite.
+
+**Consecuencias.** Mutación, validación, recorte a rango y distancia genética
+tratan `line` sin ningún caso especial, y cambiar de la línea MACD al
+histograma es una mutación de parámetro como cualquier otra. A cambio, un
+genoma en JSON dice `"line": 2` y hay que mirar el catálogo para saber que eso
+es el histograma; `genome.describe()` y el dashboard lo traducen.
+
+---
+
+### D-013 · 2026-09-20 · Los indicadores de rango excluyen la vela actual
+
+**Contexto.** `DONCHIAN_HIGH` ya declaraba en el catálogo que excluye la vela en
+curso. `HIGHEST` y `LOWEST` no decían nada.
+
+**Decisión.** Los cuatro excluyen la vela actual (`rolling(n).max().shift(1)`).
+
+**Consecuencias.** Una ruptura puede ocurrir de verdad. Si `HIGHEST` incluyera
+la vela actual, `close > HIGHEST(high, n)` sería imposible por definición
+—`high[t] >= close[t]`— y la familia BREAKOUT entera evolucionaría sobre reglas
+muertas sin que nada fallara ruidosamente. Es la clase de error que se
+descubre tres meses después preguntándose por qué una familia no prospera.
+
+---
+
+### D-014 · 2026-09-20 · El muestreo de reglas recibe los genes, no sus ids
+
+**Contexto.** El contrato de `random_rule` recibía `feature_ids: list[str]`.
+
+**Decisión.** Recibe los `FeatureGene` completos.
+
+**Consecuencias.** Sin saber qué indicador hay detrás de un id no se puede
+decidir con qué tiene sentido compararlo, que es justo lo que separa el
+muestreo sesgado de un generador de ruido. Los ids se deducen de los genes, así
+que no se pierde nada.
+
+---
+
+### D-015 · 2026-09-20 · Postura y polaridad al sembrar
+
+**Contexto.** Un muestreo que elige bien los indicadores pero al azar el sentido
+de las comparaciones produce bots de tendencia que compran debilidad y bots de
+reversión que compran fuerza: la familia dice una cosa y el genoma hace otra.
+
+**Decisión.** Cada familia tiene una **postura** (`up`, `down`, `compression`)
+que fija el sentido de todas las comparaciones de la entrada; la salida es la
+postura contraria. Además, los indicadores de rango tienen **polaridad**: un
+techo (`DONCHIAN_HIGH`, `HIGHEST`) sólo se compara con el precio al alza y un
+suelo (`DONCHIAN_LOW`, `LOWEST`) sólo a la baja.
+
+**Consecuencias.** Sobre siete años de BTC/USDT, alrededor de tres de cada
+cuatro bots sembrados llegan a abrir posición, frente a uno de cada diez sin el
+sesgo. La evolución empieza a explorar desde ideas con forma en vez de gastar
+generaciones descartando reglas que nunca se cumplen. Coste: el sembrador no
+explora combinaciones "al revés" que podrían funcionar; la mutación del hito 4
+sí puede llegar a ellas.

@@ -48,6 +48,8 @@ Hitos cerrados:
 - **Hito 0 — Cimientos.**
 - **Hito 1 — Datos.** Descarga, caché en Parquet y auditoría de velas.
   `BTC/USDT` en 1h, 4h y 1d desde 2019, reanudable y sin look-ahead.
+- **Hito 2 — Genoma vivo.** 26 indicadores causales y cacheados, compilación de
+  un genoma a señales y siembra sesgada por familia de ideas.
 
 **Esto opera con dinero simulado.** El modo `live` está bloqueado por código a
 propósito.
@@ -61,6 +63,9 @@ keepgarden catalog               # qué genes existen
 
 keepgarden data backfill --symbol BTC/USDT --timeframe 1h --since 2019-01-01 --context
 keepgarden data status           # rango, huecos y anomalías de la caché
+
+keepgarden genome sample --family BREAKOUT --count 3
+keepgarden genome show --genome examples/genome_trend.json
 ```
 
 ## Documentación
