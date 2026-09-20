@@ -192,3 +192,55 @@ def candles():
     """Fábrica de series de velas sintéticas."""
     return build_candles
 
+
+def build_walk(
+    n: int = 2000,
+    *,
+    start_ts: int = 1_546_300_800_000,
+    timeframe: str = "1h",
+    first_close: float = 20000.0,
+    vol: float = 0.006,
+    drift: float = 0.00005,
+    seed: int = 20260920,
+):
+    """Un paseo aleatorio con forma de mercado: tendencias, vueltas y rangos.
+
+    ``build_candles`` es una recta con una onda encima: sirve para comprobar
+    fórmulas, pero en ella un cruce de medias ocurre una sola vez y una ruptura
+    no ocurre nunca. Para preguntarle a un bot si opera hace falta una serie que
+    suba, baje y se aburra, como la de verdad.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from keepgarden.types import TIMEFRAME_MS
+
+    rng = np.random.default_rng(seed)
+    # Volatilidad cambiante: sin ella no hay regímenes que distinguir.
+    escala = 1.0 + 0.6 * np.sin(np.arange(n) / 180.0)
+    pasos = rng.normal(drift, vol, n) * escala
+    close = first_close * np.exp(np.cumsum(pasos))
+    open_ = np.empty(n)
+    open_[0] = first_close
+    open_[1:] = close[:-1]
+    rango = np.abs(rng.normal(0.0, vol / 2.0, n)) * close
+    high = np.maximum(open_, close) + rango
+    low = np.minimum(open_, close) - rango
+    ts = np.arange(n, dtype="int64") * TIMEFRAME_MS[timeframe] + start_ts
+    return pd.DataFrame(
+        {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": np.abs(rng.normal(500.0, 150.0, n)),
+            "trades": np.abs(rng.normal(300.0, 90.0, n)),
+        },
+        index=pd.Index(ts, name="ts"),
+    )
+
+
+@pytest.fixture
+def walk():
+    """Fábrica de series con forma de mercado."""
+    return build_walk
