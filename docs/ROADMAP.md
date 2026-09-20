@@ -17,7 +17,7 @@ config, CLI enrutado.
 
 ---
 
-## Hito 1 — Datos
+## Hito 1 — Datos  ✅
 
 Descargar, cachear y servir velas sin huecos ni look-ahead.
 
@@ -29,10 +29,14 @@ Descargar, cachear y servir velas sin huecos ni look-ahead.
 
 **Aceptación**
 - Backfill de `BTC/USDT 1h` desde 2019 completo y reanudable (matarlo a mitad y
-  relanzarlo termina el trabajo).
-- `data status` reporta 0 huecos no marcados.
+  relanzarlo termina el trabajo).  ✅
+- `data status` reporta 0 huecos no marcados.  ✅
 - Test: la carga de un rango nunca devuelve una vela cuyo `close_time` sea
-  futuro respecto al `now` simulado.
+  futuro respecto al `now` simulado.  ✅
+
+Añadido sobre lo previsto: `data/backfill.py`, que es donde viven los trabajos
+que ejecuta la CLI. El backfill también rellena hacia atrás si se le pide más
+historia de la que ya hay en caché.
 
 ---
 

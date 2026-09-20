@@ -39,8 +39,15 @@ continua, sobre datos reales de mercado.
 ## Estado
 
 Andamiaje completo: arquitectura, documentación, modelo de datos del genoma,
-catálogo de genes, esquema de base de datos, configuración y CLI. El motor está
-especificado como contratos y se implementa siguiendo `docs/ROADMAP.md`.
+catálogo de genes, esquema de base de datos, configuración y CLI. El resto del
+motor está especificado como contratos y se implementa siguiendo
+`docs/ROADMAP.md`.
+
+Hitos cerrados:
+
+- **Hito 0 — Cimientos.**
+- **Hito 1 — Datos.** Descarga, caché en Parquet y auditoría de velas.
+  `BTC/USDT` en 1h, 4h y 1d desde 2019, reanudable y sin look-ahead.
 
 **Esto opera con dinero simulado.** El modo `live` está bloqueado por código a
 propósito.
@@ -51,6 +58,9 @@ propósito.
 .\scripts\bootstrap.ps1          # entorno virtual e instalación editable
 keepgarden config                # valida la configuración
 keepgarden catalog               # qué genes existen
+
+keepgarden data backfill --symbol BTC/USDT --timeframe 1h --since 2019-01-01 --context
+keepgarden data status           # rango, huecos y anomalías de la caché
 ```
 
 ## Documentación

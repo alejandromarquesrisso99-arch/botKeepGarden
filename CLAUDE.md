@@ -65,7 +65,8 @@ src/keepgarden/
   config.py       carga y valida config/garden.yaml
   ids.py          identidad de los bots (id + nombre legible)
   genome/         qué ES un bot: esquema, catálogo de genes, compilación a señal
-  data/           velas: descarga, caché, indicadores
+  data/           velas: descarga, caché, indicadores (backfill.py = los
+                  trabajos que ejecuta `keepgarden data ...`)
   engine/         cómo VIVE un bot: reloj, broker simulado, cartera, bucle
   evaluation/     cómo se MIDE: métricas, fitness, walk-forward
   evolution/      cómo se REPRODUCE: mutación, cruce, fusión, selección, especies
@@ -91,7 +92,9 @@ pero cambiar su forma rompe el resto: si necesitas hacerlo, anótalo en
 ✅ evolution/lineage.py
 ✅ gardener/proposals.py
 ✅ storage/schema.sql
-✅ cli.py (enrutado; los comandos llaman a contratos)
+✅ cli.py (enrutado completo; `data backfill`, `data status`, `config` y
+   `catalog` hacen trabajo de verdad, el resto llama a contratos)
+✅ data/candles.py, data/store.py, data/sources.py, data/backfill.py  ← hito 1
 🔨 todo lo demás
 ```
 

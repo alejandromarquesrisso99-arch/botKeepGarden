@@ -118,3 +118,58 @@ en paper trading.
 **Consecuencias.** El impuesto es aproximadamente un factor común a todas las
 estrategias y meterlo en el fitness añade ruido sin cambiar el orden. Cuando haya
 dinero real se hará un informe fiscal aparte, que es donde importa.
+
+---
+
+### D-009 · 2026-09-20 · El parentesco incluye la co-parentalidad
+
+**Contexto.** El test `test_parentesco` del andamiaje exigía que dos bots que
+han tenido un hijo juntos se consideren emparentados, aunque no compartan
+ningún antepasado. La implementación original de `Pedigree.related` sólo miraba
+el árbol de antepasados y el test estaba en rojo.
+
+**Decisión.** `related(a, b)` es cierto si comparten antepasado, si uno
+desciende del otro **o si han engendrado un hijo directo juntos**. Compartir un
+descendiente lejano no cuenta.
+
+**Consecuencias.** Dos fundadores sin relación de sangre quedan emparentados en
+cuanto se cruzan, que es justo lo que la selección necesita saber para no
+repetir el mismo cruce generación tras generación. Se descartó la variante
+"comparten cualquier descendiente" porque en un jardín con fusiones todo
+confluye aguas abajo y acabaría declarando emparentado a todo el mundo.
+
+---
+
+### D-010 · 2026-09-20 · Las marcas de huecos viven en el manifiesto de la caché
+
+**Contexto.** `docs/DATA.md` dice que un hueco de velas se marca en la tabla
+`data_gaps` de SQLite. Pero esa tabla pertenece a `storage/`, que es un hito 4,
+y la regla de dependencias de `docs/ARCHITECTURE.md` §6 prohíbe que `data/`
+importe de `storage/`.
+
+**Decisión.** En el hito 1 las marcas de huecos se guardan en
+`state/cache/candles/manifest.json`, junto al resto del resumen de cada serie.
+`keepgarden data status` las lee de ahí para distinguir un hueco explicado de
+uno que nadie ha mirado.
+
+**Consecuencias.** El hito 1 no arrastra media capa de persistencia y `data/`
+sigue sin saber que SQLite existe. Cuando llegue el hito 4, el volcado a
+`data_gaps` se hace desde arriba (un repositorio que lee el manifiesto), no
+desde `data/`. Coste: la misma información en dos sitios durante un tiempo; el
+manifiesto es la fuente y SQLite la copia consultable.
+
+---
+
+### D-011 · 2026-09-20 · `trades` puede ser desconocido
+
+**Contexto.** `ccxt.fetch_ohlcv` no expone el número de operaciones de la vela,
+aunque el endpoint de Binance sí lo devuelve. La columna `trades` es parte del
+esquema canónico de velas.
+
+**Decisión.** `trades` es `float64` y vale `NaN` cuando el venue no lo dice. Las
+velas sintéticas de relleno llevan `trades = 0`, igual que el volumen.
+
+**Consecuencias.** Un futuro indicador de microestructura puede distinguir "no
+lo sé" de "no hubo ninguna operación", que son cosas muy distintas. Si algún día
+hace falta de verdad, se rellena con una llamada específica al endpoint de
+klines sin tocar el esquema.
