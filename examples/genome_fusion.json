@@ -1,0 +1,66 @@
+{
+  "id": "gen_fusion_demo",
+  "version": 1,
+  "family": "HYBRID",
+  "market": {
+    "venue": "binance",
+    "symbol": "BTC/USDT",
+    "timeframe": "1h"
+  },
+  "features": [],
+  "entry_long": null,
+  "exit_long": null,
+  "entry_short": null,
+  "exit_short": null,
+  "risk": {
+    "sizing": "ATR_RISK",
+    "risk_per_trade": 0.008,
+    "max_concurrent_positions": 1,
+    "max_exposure": 0.95,
+    "stop": {
+      "kind": "ATR_MULT",
+      "value": 2.2
+    },
+    "take_profit": {
+      "kind": "NONE",
+      "value": 0.0
+    },
+    "trailing": {
+      "kind": "NONE",
+      "value": 0.0,
+      "activate_at_r": 0.0
+    },
+    "max_holding_bars": 600,
+    "cooldown_bars": 0,
+    "allow_short": false
+  },
+  "regime": null,
+  "ensemble": {
+    "members": [
+      "bot_trend_demo",
+      "bot_breakout_demo"
+    ],
+    "weights": [
+      0.6,
+      0.4
+    ],
+    "combine": "WEIGHTED",
+    "threshold": 0.55,
+    "depth": 1
+  },
+  "meta": {
+    "born_at": "2026-09-14T00:00:00Z",
+    "generation": 4,
+    "parents": [
+      "bot_trend_demo",
+      "bot_breakout_demo"
+    ],
+    "operator": "FUSION",
+    "root_lineage": "lin_trend_demo",
+    "parent_families": [
+      "TREND",
+      "BREAKOUT"
+    ],
+    "gardener_note": "ejemplo de fusión: tendencia + ruptura, correlación baja"
+  }
+}

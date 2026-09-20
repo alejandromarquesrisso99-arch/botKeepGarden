@@ -1,0 +1,113 @@
+{
+  "id": "gen_breakout_demo",
+  "version": 1,
+  "family": "BREAKOUT",
+  "market": {
+    "venue": "binance",
+    "symbol": "BTC/USDT",
+    "timeframe": "1h"
+  },
+  "features": [
+    {
+      "id": "dc_high",
+      "kind": "DONCHIAN_HIGH",
+      "params": {
+        "period": 55.0
+      },
+      "source": "high"
+    },
+    {
+      "id": "dc_low",
+      "kind": "DONCHIAN_LOW",
+      "params": {
+        "period": 20.0
+      },
+      "source": "low"
+    },
+    {
+      "id": "bbw",
+      "kind": "BB_WIDTH",
+      "params": {
+        "period": 40.0,
+        "stdev": 2.0
+      },
+      "source": "close"
+    },
+    {
+      "id": "atr",
+      "kind": "ATR",
+      "params": {
+        "period": 14.0
+      },
+      "source": "hlc3"
+    }
+  ],
+  "entry_long": {
+    "op": "AND",
+    "children": [
+      {
+        "op": "GT",
+        "left": {
+          "price": "close"
+        },
+        "right": {
+          "ref": "dc_high"
+        }
+      },
+      {
+        "op": "PCT_RANK_LT",
+        "left": {
+          "ref": "bbw"
+        },
+        "right": {
+          "const": 0.35
+        }
+      }
+    ]
+  },
+  "exit_long": {
+    "op": "LT",
+    "left": {
+      "price": "close"
+    },
+    "right": {
+      "ref": "dc_low"
+    }
+  },
+  "entry_short": null,
+  "exit_short": null,
+  "risk": {
+    "sizing": "ATR_RISK",
+    "risk_per_trade": 0.012,
+    "max_concurrent_positions": 1,
+    "max_exposure": 0.95,
+    "stop": {
+      "kind": "ATR_MULT",
+      "value": 2.0,
+      "atr_ref": "atr"
+    },
+    "take_profit": {
+      "kind": "R_MULTIPLE",
+      "value": 3.0
+    },
+    "trailing": {
+      "kind": "NONE",
+      "value": 0.0,
+      "activate_at_r": 0.0
+    },
+    "max_holding_bars": 480,
+    "cooldown_bars": 0,
+    "allow_short": false
+  },
+  "regime": null,
+  "ensemble": null,
+  "meta": {
+    "born_at": "2026-09-14T00:00:00Z",
+    "generation": 0,
+    "parents": [],
+    "operator": "SEED",
+    "root_lineage": "lin_breakout_demo",
+    "parent_families": [],
+    "gardener_note": "ejemplo de referencia: ruptura tras compresión de volatilidad"
+  }
+}

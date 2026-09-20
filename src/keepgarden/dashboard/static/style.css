@@ -1,0 +1,59 @@
+/* Esqueleto de estilos — hito 6.
+   Paleta de jardín nocturno: fondo oscuro, acentos por familia de ideas.
+   Un color por familia, consistente en TODAS las vistas: si TREND es verde en
+   la genealogía, es verde en el scatter y en las tablas. */
+
+:root {
+  --bg: #0f1210;
+  --panel: #171b18;
+  --line: #262c27;
+  --text: #dfe5e0;
+  --muted: #8c968f;
+
+  --fam-trend:          #4ea36b;
+  --fam-mean-reversion: #d98a3a;
+  --fam-breakout:       #4a8fd4;
+  --fam-momentum:       #b566c7;
+  --fam-volatility:     #d4c04a;
+  --fam-micro:          #4ac7bd;
+  --fam-hybrid:         #9aa3a8;
+
+  --alive: 1;
+  --dead: 0.35;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+.topbar { display: flex; align-items: center; gap: 24px;
+          padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.topbar h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: .02em; }
+nav button { background: none; border: 0; color: var(--muted); cursor: pointer;
+             padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+nav button.active, nav button:hover { color: var(--text); background: var(--panel); }
+
+.view { display: none; padding: 20px; }
+.view.active { display: block; }
+
+.cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line);
+        border-radius: 10px; padding: 14px 16px; }
+.card .label { color: var(--muted); font-size: 12px; }
+.card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+
+.chart { width: 100%; height: 340px; }
+#lineage-graph { height: calc(100vh - 220px); }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 500; }
+
+.genome-readable { font-family: ui-monospace, "Cascadia Code", monospace;
+                   white-space: pre-wrap; background: var(--panel);
+                   border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+
+@media (max-width: 720px) {
+  .topbar { flex-wrap: wrap; gap: 12px; }
+  .view { padding: 14px; }
+}

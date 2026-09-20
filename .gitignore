@@ -1,0 +1,37 @@
+# Estado del jardín: se regenera, no se versiona. Se ignora el CONTENIDO y no
+# la carpeta, porque si se ignora la carpeta git no entra en ella y la excepción
+# del .gitkeep no llega a aplicarse: un clon nuevo se quedaría sin los
+# directorios que el motor espera encontrar.
+state/cache/*
+state/db/*
+state/logs/*
+state/reports/*
+!state/**/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Herramientas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editores
+.vscode/
+.idea/
+*.swp
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store

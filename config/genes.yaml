@@ -1,0 +1,151 @@
+# ===========================================================================
+# Catálogo de genes — la parte ajustable
+#
+# QUÉ SE PUEDE HACER lo define el código (src/keepgarden/genome/catalog.py):
+# los indicadores implementados y sus rangos de parámetros válidos.
+#
+# QUÉ SE PREFIERE lo define este archivo: con qué peso muestrea cada familia de
+# ideas cada indicador, y qué forma tiene un bot típico de esa familia.
+#
+# Es lo que el jardinero ajusta con la propuesta REBALANCE_QUOTAS. Tocar este
+# archivo no requiere escribir código; añadir un indicador nuevo, sí.
+# ===========================================================================
+
+# Peso relativo de muestreo. Ausente = 0.35 (posible pero improbable).
+# Un indicador con peso 0 queda excluido de esa familia.
+families:
+
+  TREND:
+    n_features: [2, 4]
+    required_categories: [trend]
+    prefers_regime: 0.4
+    weights:
+      EMA: 4.0
+      SMA: 2.0
+      MACD: 3.0
+      ADX: 3.0
+      SUPERTREND: 2.5
+      SLOPE: 2.0
+      ATR: 2.0
+      DONCHIAN_HIGH: 0.8
+      RSI: 0.5
+
+  MEAN_REVERSION:
+    n_features: [2, 4]
+    required_categories: [oscillator]
+    prefers_regime: 0.6          # sin filtro de régimen, muere en tendencias
+    weights:
+      RSI: 4.0
+      ZSCORE: 3.5
+      BBANDS: 3.5
+      KELTNER: 2.0
+      STOCH: 2.0
+      CCI: 1.5
+      WILLR: 1.5
+      ATR: 2.0
+      ADX: 1.5                   # útil invertido: entrar sólo si ADX es bajo
+
+  BREAKOUT:
+    n_features: [2, 4]
+    required_categories: [range]
+    prefers_regime: 0.3
+    weights:
+      DONCHIAN_HIGH: 4.0
+      DONCHIAN_LOW: 4.0
+      HIGHEST: 2.0
+      LOWEST: 2.0
+      ATR: 3.0
+      BB_WIDTH: 3.0              # la compresión previa es la mejor señal
+      VOL_RATIO: 2.0
+      REALIZED_VOL: 1.5
+
+  MOMENTUM:
+    n_features: [2, 3]
+    required_categories: [oscillator]
+    prefers_regime: 0.3
+    weights:
+      ROC: 4.0
+      PCT_CHANGE: 3.0
+      PCT_RANK: 3.0              # sin escala: generaliza bien entre épocas
+      RSI: 2.5
+      SLOPE: 2.0
+      MACD: 2.0
+
+  VOLATILITY:
+    n_features: [2, 4]
+    required_categories: [volatility]
+    prefers_regime: 0.2
+    weights:
+      ATR_PCT: 4.0
+      BB_WIDTH: 4.0
+      REALIZED_VOL: 3.5
+      KELTNER: 2.0
+      PCT_RANK: 2.5
+      DONCHIAN_HIGH: 1.0
+
+  MICROSTRUCTURE:
+    n_features: [2, 4]
+    required_categories: [volume]
+    prefers_regime: 0.3
+    weights:
+      OBV: 3.0
+      VWAP: 3.5
+      VOL_RATIO: 4.0
+      MFI: 3.0
+      PCT_CHANGE: 2.0
+
+# ---------------------------------------------------------------------------
+# Sesgos del gen de riesgo al sembrar, por familia. Son puntos de partida: la
+# evolución los mueve libremente dentro de los límites de garden.yaml.
+risk_priors:
+  TREND:
+    stop: {kind: ATR_MULT, value: [2.0, 4.0]}
+    take_profit: {kind: NONE}
+    trailing: {kind: ATR_MULT, value: [2.5, 5.0], activate_at_r: [0.5, 1.5]}
+    max_holding_bars: [240, 1440]
+  MEAN_REVERSION:
+    stop: {kind: ATR_MULT, value: [1.5, 3.0]}
+    take_profit: {kind: R_MULTIPLE, value: [1.0, 2.5]}
+    trailing: {kind: NONE}
+    max_holding_bars: [24, 168]
+  BREAKOUT:
+    stop: {kind: ATR_MULT, value: [1.5, 3.5]}
+    take_profit: {kind: R_MULTIPLE, value: [2.0, 5.0]}
+    trailing: {kind: ATR_MULT, value: [2.0, 4.0], activate_at_r: [1.0, 2.0]}
+    max_holding_bars: [72, 720]
+  MOMENTUM:
+    stop: {kind: ATR_MULT, value: [2.0, 4.0]}
+    take_profit: {kind: NONE}
+    trailing: {kind: ATR_MULT, value: [2.0, 4.0], activate_at_r: [0.5, 1.5]}
+    max_holding_bars: [168, 1440]
+  VOLATILITY:
+    stop: {kind: PERCENT, value: [0.02, 0.06]}
+    take_profit: {kind: PERCENT, value: [0.03, 0.10]}
+    trailing: {kind: NONE}
+    max_holding_bars: [24, 240]
+  MICROSTRUCTURE:
+    stop: {kind: ATR_MULT, value: [1.0, 2.5]}
+    take_profit: {kind: R_MULTIPLE, value: [1.0, 3.0]}
+    trailing: {kind: NONE}
+    max_holding_bars: [12, 120]
+
+# ---------------------------------------------------------------------------
+# Plantillas de regla de arranque. No son obligatorias: el muestreo puede
+# ignorarlas. Existen porque un muestreo totalmente uniforme genera basura el
+# 99 % de las veces, y arrancar desde formas con sentido ahorra generaciones.
+seed_templates:
+  TREND:
+    - "cruce de medias: EMA(rapida) > EMA(lenta)"
+    - "precio por encima de media larga Y ADX > umbral"
+  MEAN_REVERSION:
+    - "RSI < umbral bajo, salir en RSI > umbral medio"
+    - "precio por debajo de banda inferior de Bollinger"
+  BREAKOUT:
+    - "precio > Donchian(N) previo Y BB_WIDTH estaba comprimido"
+    - "precio > HIGHEST(N) Y VOL_RATIO > 1.5"
+  MOMENTUM:
+    - "ROC(N) > 0 Y PCT_RANK(largo) > 0.8"
+  VOLATILITY:
+    - "ATR_PCT en percentil bajo (compresión) → esperar expansión"
+  MICROSTRUCTURE:
+    - "precio > VWAP Y VOL_RATIO > umbral"

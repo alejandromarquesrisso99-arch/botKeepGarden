@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>botKeepGarden</title>
+  <link rel="stylesheet" href="/style.css" />
+  <!-- ECharts desde CDN: sin build, sin node_modules. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.1/echarts.min.js"></script>
+</head>
+<body>
+  <!--
+    ESQUELETO — hito 6.
+
+    Seis vistas (docs/DASHBOARD.md). La de genealogía es la pieza central:
+    un DAG con eje X = generación de nacimiento, eje Y agrupado por linaje,
+    radio proporcional al fitness, color por familia, aristas punteadas y
+    gruesas para las fusiones, y un slider temporal que reproduce la
+    evolución del jardín generación a generación.
+  -->
+  <header class="topbar">
+    <h1>botKeepGarden</h1>
+    <nav id="nav">
+      <button data-view="garden"   class="active">Jardín</button>
+      <button data-view="lineage">Genealogía</button>
+      <button data-view="generations">Generaciones</button>
+      <button data-view="species">Especies</button>
+      <button data-view="journal">Diario</button>
+    </nav>
+    <div id="status" class="status"></div>
+  </header>
+
+  <main>
+    <section id="view-garden"      class="view active"></section>
+    <section id="view-lineage"     class="view"></section>
+    <section id="view-generations" class="view"></section>
+    <section id="view-species"     class="view"></section>
+    <section id="view-journal"     class="view"></section>
+    <section id="view-bot"         class="view"></section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+{
+  "id": "gen_trend_demo",
+  "version": 1,
+  "family": "TREND",
+  "market": {
+    "venue": "binance",
+    "symbol": "BTC/USDT",
+    "timeframe": "1h"
+  },
+  "features": [
+    {
+      "id": "ema_fast",
+      "kind": "EMA",
+      "params": {
+        "period": 24.0
+      },
+      "source": "close"
+    },
+    {
+      "id": "ema_slow",
+      "kind": "EMA",
+      "params": {
+        "period": 120.0
+      },
+      "source": "close"
+    },
+    {
+      "id": "adx",
+      "kind": "ADX",
+      "params": {
+        "period": 14.0
+      },
+      "source": "close"
+    },
+    {
+      "id": "atr",
+      "kind": "ATR",
+      "params": {
+        "period": 14.0
+      },
+      "source": "hlc3"
+    }
+  ],
+  "entry_long": {
+    "op": "AND",
+    "children": [
+      {
+        "op": "CROSS_ABOVE",
+        "left": {
+          "ref": "ema_fast"
+        },
+        "right": {
+          "ref": "ema_slow"
+        }
+      },
+      {
+        "op": "GT",
+        "left": {
+          "ref": "adx"
+        },
+        "right": {
+          "const": 20.0
+        }
+      }
+    ]
+  },
+  "exit_long": {
+    "op": "CROSS_BELOW",
+    "left": {
+      "ref": "ema_fast"
+    },
+    "right": {
+      "ref": "ema_slow"
+    }
+  },
+  "entry_short": null,
+  "exit_short": null,
+  "risk": {
+    "sizing": "ATR_RISK",
+    "risk_per_trade": 0.01,
+    "max_concurrent_positions": 1,
+    "max_exposure": 0.95,
+    "stop": {
+      "kind": "ATR_MULT",
+      "value": 2.5,
+      "atr_ref": "atr"
+    },
+    "take_profit": {
+      "kind": "NONE",
+      "value": 0.0
+    },
+    "trailing": {
+      "kind": "ATR_MULT",
+      "value": 3.0,
+      "activate_at_r": 1.0
+    },
+    "max_holding_bars": 720,
+    "cooldown_bars": 0,
+    "allow_short": false
+  },
+  "regime": {
+    "enabled": true,
+    "rule": {
+      "op": "GT",
+      "left": {
+        "ref": "adx"
+      },
+      "right": {
+        "const": 18.0
+      }
+    }
+  },
+  "ensemble": null,
+  "meta": {
+    "born_at": "2026-09-14T00:00:00Z",
+    "generation": 0,
+    "parents": [],
+    "operator": "SEED",
+    "root_lineage": "lin_trend_demo",
+    "parent_families": [],
+    "gardener_note": "ejemplo de referencia: cruce de medias con filtro de tendencia"
+  }
+}

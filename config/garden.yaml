@@ -1,0 +1,181 @@
+# ===========================================================================
+# botKeepGarden — configuración del jardín
+#
+# Todo lo que gobierna el comportamiento del ecosistema está aquí. El código no
+# tiene constantes mágicas. Los valores se validan al arrancar: si algo es
+# incoherente, el jardín no arranca y te dice por qué.
+#
+# Cambiar un valor cambia la evolución. Anota los cambios importantes en
+# docs/DECISIONS.md.
+# ===========================================================================
+
+# Semilla global. Mismo valor + mismos datos = mismo jardín, byte a byte.
+seed: 20260914
+
+# ---------------------------------------------------------------------------
+market:
+  venue: binance
+  symbols:
+    - BTC/USDT
+  timeframe: 1h
+  # Timeframes descargados para features de contexto (filtros de régimen).
+  # Se alinean siempre hacia atrás: en la vela de 1h de las 13:00, la diaria
+  # disponible es la de ayer.
+  context_timeframes: ["4h", "1d"]
+  history_start: "2019-01-01"
+
+# ---------------------------------------------------------------------------
+execution:
+  # 'paper' es el único valor permitido. 'live' aborta por diseño.
+  mode: paper
+  # Segundos de margen tras el cierre de vela antes de pedirla al venue.
+  settle_delay_seconds: 20
+  # Máximo de velas a recuperar de golpe tras una caída del proceso.
+  max_catchup_candles: 2000
+  # Fallos consecutivos del venue antes de entrar en estado DEGRADED.
+  venue_failure_threshold: 5
+
+# ---------------------------------------------------------------------------
+# Fricción. Nunca a cero: un backtest sin fricción miente.
+frictions:
+  taker_fee_bps: 10.0        # 0.10 % — comisión taker de Binance spot
+  maker_fee_bps: 10.0
+  slippage_model: atr        # fixed_bps | atr | volume_aware
+  slippage_bps: 3.0
+  slippage_atr_frac: 0.05    # deslizamiento = 5 % del ATR(14), en contra
+  min_notional: 10.0
+  price_precision: 2
+  amount_precision: 6
+
+# ---------------------------------------------------------------------------
+garden:
+  initial_capital_per_bot: 1000.0   # USDT simulados, cartera aislada por bot
+  target_population: 60
+  max_population: 120
+  min_population: 20
+  ticks_per_generation: 168         # 168 velas de 1h = 1 semana
+  elite_count: 5                    # protegidos de la poda
+  cull_fraction: 0.20               # peor 20 % candidato a morir
+  min_age_generations: 2            # nadie muere por fitness antes de esto
+  idle_generations_limit: 3         # generaciones sin operar antes de morir
+  births_per_generation: 12
+
+# ---------------------------------------------------------------------------
+risk:
+  hard_max_drawdown: 0.35      # el bot muere en el acto al superarlo
+  garden_max_drawdown: 0.25    # se frenan los nacimientos y sube la poda
+  max_risk_per_trade: 0.02
+  min_risk_per_trade: 0.002
+  price_jump_anomaly: 0.40     # salto horario > 40 % = vela sospechosa
+
+# ---------------------------------------------------------------------------
+evolution:
+  # Tasa base de mutación. Es adaptativa: sube si el jardín se estanca.
+  mutation_rate: 0.35
+  mutation_rate_min_factor: 0.5
+  mutation_rate_max_factor: 3.0
+  mutations_per_child: [1, 3]
+
+  # Reparto de los nacimientos entre operadores. Debe sumar 1.0.
+  mutation_share: 0.40
+  crossover_share: 0.35
+  fusion_share: 0.15
+  seed_share: 0.10
+
+  crossover_min_distance: 0.20      # no cruzar casi-clones
+  fitness_bias_to_better_parent: 0.60
+
+  tournament_size: 3
+  diversity_floor: 0.30             # por debajo, la cosecha se llena de SEED
+  max_family_share: 0.40            # ninguna familia pasa del 40 % del jardín
+  stagnation_generations: 4
+
+  # Límites duros del genoma. Sin esto la evolución produce monstruos que
+  # sobreajustan cualquier cosa.
+  max_rule_depth: 4
+  max_rule_leaves: 6
+  max_features: 6
+
+# ---------------------------------------------------------------------------
+fusion:
+  max_depth: 2                      # no ensembles de ensembles de ensembles
+  min_members: 2
+  max_members: 4
+  max_parent_correlation: 0.45      # la fusión sólo vale si descorrelaciona
+  min_parent_generations: 2         # los padres deben tener historial vivo
+  default_combine: WEIGHTED         # VOTE | WEIGHTED | UNANIMOUS | ANY
+  default_threshold: 0.55
+
+# ---------------------------------------------------------------------------
+speciation:
+  clone_threshold: 0.15             # por debajo, son el mismo organismo
+  species_threshold: 0.35           # por debajo, misma especie
+  distance_weights:                 # debe sumar 1.0
+    features: 0.35
+    rules: 0.35
+    risk: 0.20
+    family: 0.10
+
+# ---------------------------------------------------------------------------
+incubator:
+  # Umbrales para que un genoma llegue a nacer.
+  min_sortino: 0.8
+  max_drawdown: 0.30
+  min_trades_per_fold: 15
+  max_oos_decay: 0.50               # degradación máxima fuera de muestra
+  multiplicity_penalty: 0.08        # el listón sube con log10(nº de pruebas)
+
+  # Walk-forward anclado, en velas de 1h.
+  n_folds: 5
+  train_bars: 8760                  # ~1 año
+  validation_bars: 2190             # ~3 meses
+  embargo_bars: 120                 # 5 días entre tramos, contra fugas
+  holdout_bars: 1440                # ~2 meses finales. INTOCABLES.
+
+  workers: 0                        # 0 = cpu_count - 1
+
+# ---------------------------------------------------------------------------
+fitness:
+  min_trades: 10                    # por debajo, fitness indefinido (no bajo)
+  weights:                          # sobre z-scores robustos
+    sortino: 0.35
+    calmar: 0.20
+    ulcer: 0.15
+    profit_factor: 0.15
+    consistency: 0.15
+  penalty_complexity: 0.02
+  penalty_correlation: 0.30
+  correlation_threshold: 0.60
+  penalty_fees: 0.25
+  fee_drag_threshold: 0.30
+  penalty_turnover: 0.15
+  bonus_novelty: 0.10
+  bonus_age: 0.05
+  age_saturation_generations: 8
+  # El jardín vivo manda sobre el backtest.
+  live_weight: 0.70
+  incubator_weight: 0.30
+
+# ---------------------------------------------------------------------------
+gardener:
+  every_generations: 4              # ~1 mes de jardín vivo
+  stagnation_generations: 4
+  max_retire_share: 0.20            # no puede vaciar el jardín
+  max_tune_delta: 0.50              # no puede mover un parámetro más del 50 %
+  report_dir: state/reports
+  journal_max_entries: 500
+
+# ---------------------------------------------------------------------------
+storage:
+  db_path: state/db/garden.db
+  cache_dir: state/cache
+  log_dir: state/logs
+  snapshot_every_generations: 10
+
+# ---------------------------------------------------------------------------
+dashboard:
+  host: 127.0.0.1
+  port: 8756
+  graph_node_limit: 2000            # por encima, se colapsan linajes extintos
+  series_points: 2000               # decimado LTTB en servidor
+  open_browser: true
