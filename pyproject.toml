@@ -59,10 +59,18 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 ignore = [
     "E501",    # la longitud la controla el formateador
     "B905",    # zip(strict=) no siempre aporta aquí
+    # El proyecto se documenta en español y con tipografía de verdad: la raya,
+    # las comillas y el guion largo NO son caracteres sospechosos aquí.
+    "RUF001",
+    "RUF002",
+    "RUF003",
 ]
 
 [tool.mypy]
-python_version = "3.11"
+# Sin python_version fijado a propósito: se comprueba contra el intérprete que
+# se esté usando. Fijarlo a 3.11 hacía que mypy ni arrancase, porque los stubs
+# de numpy que vienen con el entorno usan sintaxis de 3.12. La compatibilidad
+# con 3.11 la vigila ruff (target-version = "py311").
 packages = ["keepgarden"]
 mypy_path = "src"
 warn_unused_ignores = true
@@ -73,5 +81,5 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
 [[tool.mypy.overrides]]
-module = ["ccxt.*", "pyarrow.*"]
+module = ["ccxt.*", "pyarrow.*", "pandas.*", "yaml.*"]
 ignore_missing_imports = true
