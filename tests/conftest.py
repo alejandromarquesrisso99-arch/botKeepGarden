@@ -137,3 +137,58 @@ def breakout_genome() -> Genome:
         ),
     )
 
+
+# --------------------------------------------------------------------------- #
+# Velas sintéticas                                                             #
+# --------------------------------------------------------------------------- #
+
+
+def build_candles(
+    n: int = 200,
+    *,
+    start_ts: int = 1_546_300_800_000,   # 2019-01-01T00:00:00Z
+    timeframe: str = "1h",
+    first_close: float = 100.0,
+    step: float = 0.5,
+    volume: float = 10.0,
+):
+    """Serie de velas determinista, continua y coherente.
+
+    El cierre sube ``step`` por vela siguiendo una onda suave, de forma que los
+    indicadores tengan algo que morder sin que aparezcan saltos que la
+    validación marcaría como anomalía.
+    """
+    import math
+
+    import numpy as np
+    import pandas as pd
+
+    from keepgarden.types import TIMEFRAME_MS
+
+    tf_ms = TIMEFRAME_MS[timeframe]
+    ts = np.arange(n, dtype="int64") * tf_ms + start_ts
+    i = np.arange(n, dtype="float64")
+    close = first_close + step * i + 3.0 * np.sin(i / (2.0 * math.pi))
+    open_ = np.empty(n, dtype="float64")
+    open_[0] = first_close
+    open_[1:] = close[:-1]
+    high = np.maximum(open_, close) * 1.002
+    low = np.minimum(open_, close) * 0.998
+    return pd.DataFrame(
+        {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": np.full(n, volume, dtype="float64"),
+            "trades": np.full(n, 42.0, dtype="float64"),
+        },
+        index=pd.Index(ts, name="ts"),
+    )
+
+
+@pytest.fixture
+def candles():
+    """Fábrica de series de velas sintéticas."""
+    return build_candles
+
