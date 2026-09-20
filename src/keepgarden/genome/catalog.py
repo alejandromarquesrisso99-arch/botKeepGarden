@@ -15,8 +15,9 @@ Una mutación nunca puede producir un genoma fuera de este catálogo.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal, Mapping
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any, Literal, Mapping
 
 from ..types import IdeaFamily, PriceField
 
@@ -65,8 +66,10 @@ class IndicatorSpec:
     #: parámetros. Se expresa como múltiplo del parámetro principal.
     warmup_factor: float = 3.0
     warmup_param: str = "period"
-    #: Si True, el indicador produce varias series y hay que elegir una con el
-    #: parámetro ``line`` (p.ej. MACD: macd / signal / hist).
+    #: Si no está vacío, el indicador produce varias series y hay que elegir una
+    #: con el parámetro ``line``, que es el **índice** dentro de esta tupla
+    #: (p.ej. MACD: 0 = macd, 1 = signal, 2 = hist). Es un índice y no un nombre
+    #: porque los parámetros del genoma son números: ver docs/DECISIONS.md D-012.
     multi_output: tuple[str, ...] = ()
     doc: str = ""
 
@@ -79,6 +82,13 @@ class IndicatorSpec:
     def warmup_bars(self, params: Mapping[str, float]) -> int:
         base = float(params.get(self.warmup_param, 14))
         return max(2, int(round(base * self.warmup_factor)))
+
+    def line_name(self, params: Mapping[str, float]) -> str:
+        """Qué línea de un indicador multi-salida pide este juego de parámetros."""
+        if not self.multi_output:
+            return ""
+        idx = int(params.get("line", 0))
+        return self.multi_output[min(max(idx, 0), len(self.multi_output) - 1)]
 
     def clamp_params(self, params: Mapping[str, float]) -> dict[str, float]:
         out: dict[str, float] = {}
@@ -113,7 +123,8 @@ INDICATORS: dict[str, IndicatorSpec] = {
     ),
     "MACD": IndicatorSpec(
         "MACD", "trend", "signed",
-        (_p("fast", 5, 60, bin_size=2), _p("slow", 15, 200, bin_size=5), _p("signal", 3, 40)),
+        (_p("fast", 5, 60, bin_size=2), _p("slow", 15, 200, bin_size=5), _p("signal", 3, 40),
+         _p("line", 0, 2)),
         (PriceField.CLOSE,), warmup_param="slow", warmup_factor=3.0,
         multi_output=("macd", "signal", "hist"),
         doc="Convergencia/divergencia de medias. Elegir línea con el parámetro 'line'.",
@@ -178,7 +189,8 @@ INDICATORS: dict[str, IndicatorSpec] = {
     ),
     "BBANDS": IndicatorSpec(
         "BBANDS", "volatility", "price",
-        (_p("period", 10, 200, bin_size=5), _p("stdev", 1.0, 4.0, integer=False, bin_size=0.25)),
+        (_p("period", 10, 200, bin_size=5), _p("stdev", 1.0, 4.0, integer=False, bin_size=0.25),
+         _p("line", 0, 2)),
         (PriceField.CLOSE,), multi_output=("upper", "middle", "lower"),
         doc="Bandas de Bollinger. Elegir banda con el parámetro 'line'.",
     ),
@@ -190,7 +202,8 @@ INDICATORS: dict[str, IndicatorSpec] = {
     ),
     "KELTNER": IndicatorSpec(
         "KELTNER", "volatility", "price",
-        (_p("period", 10, 120, bin_size=5), _p("multiplier", 0.5, 4.0, integer=False, bin_size=0.25)),
+        (_p("period", 10, 120, bin_size=5), _p("multiplier", 0.5, 4.0, integer=False, bin_size=0.25),
+         _p("line", 0, 2)),
         (PriceField.CLOSE,), multi_output=("upper", "middle", "lower"),
         doc="Canal de Keltner basado en ATR.",
     ),
@@ -252,8 +265,8 @@ INDICATORS: dict[str, IndicatorSpec] = {
 #: Indicadores agrupados por categoría, para SWAP_INDICATOR.
 BY_CATEGORY: dict[Category, tuple[str, ...]] = {}
 for _kind, _spec in INDICATORS.items():
-    BY_CATEGORY.setdefault(_spec.category, ())  # type: ignore[arg-type]
-    BY_CATEGORY[_spec.category] = BY_CATEGORY[_spec.category] + (_kind,)  # type: ignore[index]
+    BY_CATEGORY.setdefault(_spec.category, ())
+    BY_CATEGORY[_spec.category] = BY_CATEGORY[_spec.category] + (_kind,)
 
 
 def spec(kind: str) -> IndicatorSpec:
@@ -273,10 +286,11 @@ def is_comparable(a: str, b: str) -> bool:
     Comparar un RSI con una EMA no significa nada: viven en escalas distintas.
     El muestreo de reglas usa esto para no generar basura.
     """
-    ka, kb = spec(a).output, spec(b).output
-    if ka == kb:
-        return True
-    return {ka, kb} == {"price", "price"}
+    # Dos indicadores son comparables cuando su salida es de la misma
+    # naturaleza. La línea que había aquí —``{ka, kb} == {"price", "price"}``—
+    # nunca podía ser cierta: un conjunto con "price" repetido tiene un solo
+    # elemento, y si llegaba hasta ahí es que ``ka != kb``.
+    return spec(a).output == spec(b).output
 
 
 # --------------------------------------------------------------------------- #
@@ -375,6 +389,8 @@ class GeneCatalog:
     )
     #: Pesos de muestreo por (familia, indicador). 1.0 si no se especifica.
     weights: dict[tuple[IdeaFamily, str], float] = field(default_factory=dict)
+    #: Sesgos del gen de riesgo al sembrar, tal y como vienen de genes.yaml.
+    risk_priors: dict[IdeaFamily, dict[str, Any]] = field(default_factory=dict)
 
     def weight(self, family: IdeaFamily, kind: str) -> float:
         if kind not in self.indicators:
@@ -391,6 +407,59 @@ class GeneCatalog:
         return [k for k in self.indicators if self.weight(family, k) > 0]
 
 
+def load_catalog(path: str | Path | None = None) -> GeneCatalog:
+    """Construye el catálogo efectivo: el de código + el sesgo de genes.yaml.
+
+    El código dice **qué se puede hacer**; el YAML, **qué se prefiere**. Si el
+    archivo no existe se devuelve el catálogo de código tal cual: el jardín
+    tiene que poder sembrar aunque nadie haya tocado la configuración.
+
+    Un indicador o una familia desconocidos en el YAML son un error, no un
+    detalle que tragarse: casi siempre es una errata, y una errata silenciosa
+    aquí desactiva media familia de ideas sin que nadie se entere.
+    """
+    import yaml
+
+    catalog = GeneCatalog()
+    if path is None:
+        return catalog
+    file = Path(path)
+    if not file.is_file():
+        return catalog
+
+    raw = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+
+    for name, block in (raw.get("families") or {}).items():
+        family = IdeaFamily(name)
+        tpl = catalog.templates.get(family)
+        if tpl is None:
+            raise ValueError(f"{file}: la familia {name} no tiene plantilla en el código")
+        cambios: dict[str, Any] = {}
+        if "n_features" in block:
+            low, high = block["n_features"]
+            cambios["n_features"] = (int(low), int(high))
+        if "required_categories" in block:
+            cats = tuple(block["required_categories"])
+            for cat in cats:
+                if cat not in BY_CATEGORY:
+                    raise ValueError(f"{file}: categoría desconocida {cat!r} en {name}")
+            cambios["required_categories"] = cats
+        if "prefers_regime" in block:
+            cambios["prefers_regime"] = float(block["prefers_regime"])
+        if cambios:
+            catalog.templates[family] = replace(tpl, **cambios)
+
+        for kind, weight in (block.get("weights") or {}).items():
+            if kind not in catalog.indicators:
+                raise ValueError(f"{file}: {name} referencia el indicador {kind!r}, que no existe")
+            catalog.weights[(family, kind)] = float(weight)
+
+    for name, block in (raw.get("risk_priors") or {}).items():
+        catalog.risk_priors[IdeaFamily(name)] = dict(block)
+
+    return catalog
+
+
 DEFAULT_CATALOG = GeneCatalog()
 
 __all__ = (
@@ -404,5 +473,6 @@ __all__ = (
     "IndicatorSpec",
     "ParamSpec",
     "is_comparable",
+    "load_catalog",
     "spec",
 )
