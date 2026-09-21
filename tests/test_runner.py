@@ -274,6 +274,48 @@ def test_un_tick_reprocesado_no_duplica_ordenes(
         db.close()
 
 
+def test_un_fill_ya_registrado_no_vuelve_a_escribir_la_operacion(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El índice único de 'orders' protege también a 'trades'.
+
+    Si el mismo relleno se procesa dos veces —un reinicio mal cortado—, la
+    segunda vez la orden ya está y no puede nacer una operación fantasma.
+    """
+    from keepgarden.engine.broker import Fill
+    from keepgarden.types import OrderKind, Side
+
+    velas = _velas(200)
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=1, velas=velas)
+    try:
+        runner = GardenRunner(cfg=config, db=db, verbose=False)
+        runner.prepare()
+        runner._load_population(0)
+        estado = next(iter(runner.bots.values()))
+        tick = Tick(ts=int(velas.index[10]), generation=1, index=10)
+        relleno = Fill(
+            bot_id=estado.bot_id, candle_ts=int(velas.index[9]),
+            fill_ts=int(velas.index[10]), kind=OrderKind.ENTRY, side=Side.LONG,
+            price=float(velas["open"].iloc[10]), reference_price=float(velas["open"].iloc[10]),
+            slippage=0.0, amount=0.01, notional=10.0, fee=0.01,
+        )
+
+        runner._record_fill(estado, relleno, None, tick, None)
+        assert repos.db.query_one("SELECT COUNT(*) AS n FROM trades")["n"] == 1
+        assert repos.db.query_one("SELECT COUNT(*) AS n FROM orders")["n"] == 1
+        # La orden quedó atada a su operación.
+        assert repos.db.query_one("SELECT trade_id FROM orders")["trade_id"] is not None
+
+        # Segunda vuelta con el mismo relleno: la base no se mueve.
+        runner._record_fill(estado, relleno, None, tick, None)
+        assert repos.db.query_one("SELECT COUNT(*) AS n FROM trades")["n"] == 1, (
+            "operación fantasma: la vela ya se había procesado"
+        )
+        assert repos.db.query_one("SELECT COUNT(*) AS n FROM orders")["n"] == 1
+    finally:
+        db.close()
+
+
 def test_el_freno_de_drawdown_mata_al_bot_en_el_acto(
     tmp_path: Path, cfg: Config, catalog
 ) -> None:

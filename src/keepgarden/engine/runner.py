@@ -638,6 +638,19 @@ class GardenRunner:
         lado = str(fill.side)
         trade_id: int | None = estado.open_trades.get(lado)
 
+        # La orden va primero, y es ella quien manda: si ya estaba, esta vela
+        # se procesó en una vida anterior del proceso y no se toca 'trades'.
+        # Su índice único sobre (bot_id, candle_ts, kind) es el que protege a
+        # las dos tablas, no sólo a la suya.
+        order_id = self.repos.trades.record_order(
+            bot_id=estado.bot_id, trade_id=trade_id, candle_ts=fill.candle_ts,
+            fill_ts=fill.fill_ts, kind=str(fill.kind), side=lado, price=fill.price,
+            reference_price=fill.reference_price, slippage=fill.slippage,
+            amount=fill.amount, notional=fill.notional, fee=fill.fee,
+        )
+        if order_id == 0:
+            return
+
         if fill.kind is OrderKind.ENTRY:
             pos = next(
                 (p for p in estado.portfolio.positions if p.side is fill.side), None
@@ -650,6 +663,7 @@ class GardenRunner:
                 take_price=pos.take_price if pos else None,
             )
             estado.open_trades[lado] = trade_id
+            self.repos.trades.link_order(order_id, trade_id)
             self._pending_events.append(
                 {
                     "type": EventType.TRADE_OPENED, "ts": int(fill.fill_ts),
@@ -685,13 +699,6 @@ class GardenRunner:
                                 "symbol": estado.symbol},
                 }
             )
-
-        self.repos.trades.record_order(
-            bot_id=estado.bot_id, trade_id=trade_id, candle_ts=fill.candle_ts,
-            fill_ts=fill.fill_ts, kind=str(fill.kind), side=lado, price=fill.price,
-            reference_price=fill.reference_price, slippage=fill.slippage,
-            amount=fill.amount, notional=fill.notional, fee=fill.fee,
-        )
 
     # ------------------------------------------------------------- persistencia
 

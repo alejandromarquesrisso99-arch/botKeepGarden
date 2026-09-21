@@ -39,6 +39,47 @@ def genomas(cfg, catalog):
 # --------------------------------------------------------------------------- #
 
 
+def test_una_orden_repetida_devuelve_cero_y_no_se_duplica(
+    repos: Repositories, genomas
+) -> None:
+    """El índice único protege a 'orders'; el 0 avisa a quien llama.
+
+    Sin esa distinción, ``lastrowid`` devuelve el id de la última inserción que
+    sí ocurrió —que no tiene nada que ver con esta orden— y el motor creería
+    haber registrado algo nuevo.
+    """
+    bot = repos.bots.create(genomas[0], generation=0, initial_capital=1000.0)
+    datos = dict(
+        bot_id=bot, candle_ts=1_600_000_000_000, fill_ts=1_600_003_600_000,
+        kind="ENTRY", side="LONG", price=100.0, amount=1.0, notional=100.0, fee=0.1,
+    )
+    primera = repos.trades.record_order(**datos)
+    assert primera > 0
+
+    segunda = repos.trades.record_order(**datos)
+    assert segunda == 0, "una orden ya registrada tiene que avisar de que ya estaba"
+    assert repos.db.query_one("SELECT COUNT(*) AS n FROM orders")["n"] == 1
+
+    # Cambiar el tipo sí es otra orden: la clave es (bot, vela, tipo).
+    assert repos.trades.record_order(**{**datos, "kind": "EXIT_SIGNAL"}) > 0
+    assert repos.db.query_one("SELECT COUNT(*) AS n FROM orders")["n"] == 2
+
+
+def test_link_order_ata_la_orden_a_su_operacion(repos: Repositories, genomas) -> None:
+    bot = repos.bots.create(genomas[0], generation=0, initial_capital=1000.0)
+    orden = repos.trades.record_order(
+        bot_id=bot, candle_ts=1_600_000_000_000, fill_ts=1_600_003_600_000,
+        kind="ENTRY", side="LONG", price=100.0, amount=1.0, notional=100.0, fee=0.1,
+    )
+    repos.generations.open(0, 0)
+    operacion = repos.trades.open_trade(
+        bot, 0, side="LONG", open_ts=1_600_003_600_000, open_price=100.0, amount=1.0
+    )
+    repos.trades.link_order(orden, operacion)
+    fila = repos.db.query_one("SELECT trade_id FROM orders WHERE order_id = ?", (orden,))
+    assert int(fila["trade_id"]) == operacion
+
+
 def test_inicializar_crea_el_esquema_y_la_version(db: Database) -> None:
     assert db.get_meta("schema_version") == str(SCHEMA_VERSION)
     tablas = {

@@ -410,6 +410,11 @@ class TradeRepository:
 
         Es lo que hace idempotente el reprocesado de una vela tras un reinicio:
         un tick repetido no puede duplicar operaciones.
+
+        Devuelve el ``order_id`` nuevo, o **0 si la orden ya estaba**: así
+        quien llama sabe que esa vela ya se procesó y no debe tocar ``trades``.
+        Sin esa distinción ``lastrowid`` devuelve el id de la última inserción
+        que sí ocurrió, que no tiene nada que ver con esta orden.
         """
         cur = self.db.execute(
             "INSERT OR IGNORE INTO orders (bot_id, trade_id, candle_ts, fill_ts, kind, "
@@ -422,7 +427,20 @@ class TradeRepository:
                 float(kw["amount"]), float(kw.get("notional", 0.0)), float(kw.get("fee", 0.0)),
             ),
         )
+        if cur.rowcount == 0:
+            return 0
         return int(cur.lastrowid or 0)
+
+    def link_order(self, order_id: int, trade_id: int) -> None:
+        """Ata una orden ya registrada a la operación que abrió.
+
+        La orden se escribe antes que la operación —es ella quien dice si la
+        vela ya se había procesado—, así que el vínculo se cierra después.
+        """
+        self.db.execute(
+            "UPDATE orders SET trade_id = ? WHERE order_id = ?",
+            (int(trade_id), int(order_id)),
+        )
 
     def open_positions(self, bot_id: BotId | None = None) -> list[sqlite3.Row]:
         if bot_id is None:
