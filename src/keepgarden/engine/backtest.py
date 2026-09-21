@@ -78,6 +78,7 @@ def run_backtest(
     *,
     features: object | None = None,
     initial_capital: float | None = None,
+    members: dict[str, Genome] | None = None,
 ) -> BacktestResult:
     """Corre un genoma sobre un rango de velas.
 
@@ -95,6 +96,9 @@ def run_backtest(
     5. Revalorar y anotar equity.
 
     Durante el calentamiento no se opera.
+
+    ``members`` son los genomas de los miembros cuando ``genome`` es una fusión:
+    un ensemble no tiene reglas propias y sin ellos no se puede compilar.
     """
     data = ensure_canonical(candles)
     n = len(data)
@@ -115,7 +119,7 @@ def run_backtest(
 
     if features is None:
         features = IndicatorCache(candles=data, timeframe=genome.market.timeframe)
-    compiled = compile_genome(genome, data, features)  # type: ignore[arg-type]
+    compiled = compile_genome(genome, data, features, members=members)  # type: ignore[arg-type]
     risk = genome.risk
 
     ts = np.asarray(data.index, dtype="int64")
@@ -250,15 +254,22 @@ def _decidir(
         broker.submit(OrderRequest(genome.id, momento, OrderKind.ENTRY, entrada, amount))
 
 
-def _run_one(argumentos: tuple[Genome, pd.DataFrame, Config]) -> BacktestResult:
+def _run_one(
+    argumentos: tuple[Genome, pd.DataFrame, Config, dict[str, Genome] | None],
+) -> BacktestResult:
     """Punto de entrada de cada worker. Debe estar al nivel del módulo para que
     ``multiprocessing`` pueda encontrarlo al arrancar un proceso nuevo."""
-    genome, candles, cfg = argumentos
-    return run_backtest(genome, candles, cfg)
+    genome, candles, cfg, members = argumentos
+    return run_backtest(genome, candles, cfg, members=members)
 
 
 def run_batch(
-    genomes: list[Genome], candles: pd.DataFrame, cfg: Config, *, workers: int = 0
+    genomes: list[Genome],
+    candles: pd.DataFrame,
+    cfg: Config,
+    *,
+    workers: int = 0,
+    members: dict[str, Genome] | None = None,
 ) -> list[BacktestResult]:
     """Corre muchos genomas en paralelo con ``multiprocessing``.
 
@@ -273,9 +284,9 @@ def run_batch(
         return []
     n = workers if workers > 0 else max(1, (os.cpu_count() or 2) - 1)
     if n <= 1 or len(genomes) == 1:
-        return [run_backtest(g, candles, cfg) for g in genomes]
+        return [run_backtest(g, candles, cfg, members=members) for g in genomes]
     with ProcessPoolExecutor(max_workers=n) as pool:
-        return list(pool.map(_run_one, [(g, candles, cfg) for g in genomes]))
+        return list(pool.map(_run_one, [(g, candles, cfg, members) for g in genomes]))
 
 
 __all__ = (
