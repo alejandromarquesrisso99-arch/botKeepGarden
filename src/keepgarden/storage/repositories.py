@@ -241,6 +241,40 @@ class BotRepository:
             row["bot_id"]: Genome.from_dict(json.loads(row["payload"])) for row in filas
         }
 
+    # -- estado vivo de la cartera ----------------------------------------- #
+
+    def save_runtime(
+        self, rows: Sequence[tuple[BotId, Timestamp, Mapping[str, Any]]]
+    ) -> None:
+        """Vuelca el estado vivo de varias carteras de una vez.
+
+        Se llama una vez por tick desde dentro de la transacción del tick: o
+        está el tick entero o no está, igual que las órdenes.
+        """
+        if not rows:
+            return
+        self.db.executemany(
+            "INSERT INTO bot_runtime (bot_id, ts, payload) VALUES (?,?,?) "
+            "ON CONFLICT(bot_id) DO UPDATE SET ts = excluded.ts, "
+            "payload = excluded.payload",
+            [(bot_id, int(ts), _json(payload)) for bot_id, ts, payload in rows],
+        )
+
+    def load_runtime(self, bot_id: BotId) -> dict[str, Any] | None:
+        """Lo que dejó escrito la última ejecución, o ``None`` si no hay nada.
+
+        Devuelve ``None`` tanto para un bot recién nacido como para un jardín
+        anterior a esta tabla; quien llama decide qué hacer con cada caso.
+        """
+        fila = self.db.query_one(
+            "SELECT payload FROM bot_runtime WHERE bot_id = ?", (bot_id,)
+        )
+        return None if fila is None else dict(json.loads(fila["payload"]))
+
+    def drop_runtime(self, bot_id: BotId) -> None:
+        """Olvida el estado vivo de un bot que acaba de morir."""
+        self.db.execute("DELETE FROM bot_runtime WHERE bot_id = ?", (bot_id,))
+
 
 # --------------------------------------------------------------------------- #
 # Generaciones                                                                 #

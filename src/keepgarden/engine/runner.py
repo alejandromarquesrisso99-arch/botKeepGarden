@@ -180,6 +180,9 @@ class GardenRunner:
     _pending_events: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _window_start_index: int = 0
     _tick_ms: float = 0.0
+    #: Bots resucitados de un jardín anterior a ``bot_runtime`` (D-033), cuyo
+    #: estado vivo hay que aproximar en vez de leerlo.
+    _legacy_resume: set[BotId] = field(default_factory=set, repr=False)
 
     # ---------------------------------------------------------------- arranque
 
@@ -304,8 +307,16 @@ class GardenRunner:
 
     # ------------------------------------------------------------- población
 
-    def _build_state(self, bot_id: BotId, genome: Genome, first_index: int) -> _BotState:
-        """Compila las señales de un bot y reconstruye su cartera."""
+    def _build_state(
+        self, bot_id: BotId, genome: Genome, first_index: int, *, resume: bool = False
+    ) -> _BotState:
+        """Compila las señales de un bot y reconstruye su cartera.
+
+        ``resume`` distingue al bot que vuelve de una ejecución anterior —y
+        tiene estado vivo que recuperar— del que acaba de nacer, que no tiene
+        nada, y del que sólo se está recompilando, que conserva el suyo en
+        memoria.
+        """
         from ..genome.compile import compile_genome
 
         assert self.repos is not None
@@ -358,11 +369,114 @@ class GardenRunner:
             history=deque(maxlen=max(0, self.cfg.fitness.live_window_generations - 1)),
             last_price=float(serie.close[min(max(0, first_index), n - 1)]),
         )
-        self._restore_positions(estado, serie)
+        if resume and not self._restore_runtime(estado):
+            self._restore_positions(estado, serie)
+            self._legacy_resume.add(bot_id)
         return estado
 
+    # -- estado vivo entre ejecuciones -------------------------------------- #
+
+    def _runtime_payload(self, estado: _BotState) -> dict[str, Any]:
+        """El estado vivo de un bot, en JSON.
+
+        Es todo lo que no cabe en ``trades``: el ancla del trailing, el 1R, las
+        velas aguantadas, la comisión de entrada, la cola del broker y el
+        enfriamiento. Sin esto, reanudar con una posición abierta la cierra con
+        otro precio, otras comisiones y otra duración: no es el mismo jardín.
+        """
+        port = estado.portfolio
+        return {
+            "cooldown_until_ts": port.cooldown_until_ts,
+            "total_fees": port.total_fees,
+            "last_price": estado.last_price,
+            "open_trades": dict(estado.open_trades),
+            "positions": [
+                {
+                    "side": str(pos.side),
+                    "amount": pos.amount,
+                    "entry_price": pos.entry_price,
+                    "entry_ts": int(pos.entry_ts),
+                    "stop_price": pos.stop_price,
+                    "take_price": pos.take_price,
+                    "trailing_anchor": pos.trailing_anchor,
+                    "initial_risk": pos.initial_risk,
+                    "bars_held": int(pos.bars_held),
+                    "entry_atr": pos.entry_atr,
+                    "entry_fee": pos.entry_fee,
+                    "trailing_active": bool(pos.trailing_active),
+                }
+                for pos in port.positions
+            ],
+            "pending": [
+                {
+                    "candle_ts": int(orden.candle_ts),
+                    "kind": str(orden.kind),
+                    "side": str(orden.side),
+                    "amount": orden.amount,
+                    "trigger_price": orden.trigger_price,
+                }
+                for orden in estado.broker.pending
+            ],
+        }
+
+    def _restore_runtime(self, estado: _BotState) -> bool:
+        """Devuelve el bot a donde estaba. Falso si no había nada guardado."""
+        assert self.repos is not None
+        datos = self.repos.bots.load_runtime(estado.bot_id)
+        if datos is None:
+            return False
+
+        port = estado.portfolio
+        cooldown = datos.get("cooldown_until_ts")
+        port.cooldown_until_ts = int(cooldown) if cooldown is not None else None
+        port.total_fees = float(datos.get("total_fees", 0.0))
+        port.positions = [
+            Position(
+                side=Side(str(pos["side"])),
+                amount=float(pos["amount"]),
+                entry_price=float(pos["entry_price"]),
+                entry_ts=int(pos["entry_ts"]),
+                stop_price=pos.get("stop_price"),
+                take_price=pos.get("take_price"),
+                trailing_anchor=pos.get("trailing_anchor"),
+                initial_risk=float(pos.get("initial_risk", 0.0)),
+                bars_held=int(pos.get("bars_held", 0)),
+                entry_atr=float(pos.get("entry_atr", 0.0)),
+                entry_fee=float(pos.get("entry_fee", 0.0)),
+                trailing_active=bool(pos.get("trailing_active", False)),
+            )
+            for pos in datos.get("positions") or ()
+        ]
+        for orden in datos.get("pending") or ():
+            estado.broker.submit(
+                OrderRequest(
+                    estado.bot_id,
+                    int(orden["candle_ts"]),
+                    OrderKind(str(orden["kind"])),
+                    Side(str(orden["side"])),
+                    float(orden["amount"]),
+                    orden.get("trigger_price"),
+                )
+            )
+        estado.open_trades = {
+            str(lado): int(trade_id)
+            for lado, trade_id in (datos.get("open_trades") or {}).items()
+        }
+        precio = float(datos.get("last_price") or 0.0)
+        if precio > 0:
+            estado.last_price = precio
+        return True
+
     def _restore_positions(self, estado: _BotState, serie: _Series) -> None:
-        """Vuelve a poner en pie las posiciones abiertas que dejó la caída."""
+        """Reconstruye las posiciones abiertas desde ``trades``.
+
+        Sólo para jardines anteriores a ``bot_runtime`` (D-033), que no
+        guardaron su estado vivo. Recupera lo que la tabla sabe —lado, tamaño,
+        precio de entrada, stop y take— y da por perdido lo que sólo vivía en
+        memoria: el ancla del trailing, la comisión de entrada y las velas
+        aguantadas. Es una aproximación, y por eso ocurre una sola vez: el
+        primer tick ya escribe estado vivo de verdad.
+        """
         assert self.repos is not None
         for fila in self.repos.trades.open_positions(estado.bot_id):
             lado = Side(str(fila["side"]))
@@ -390,7 +504,9 @@ class GardenRunner:
                     f"de ese mercado: se queda fuera de este arranque"
                 )
                 continue
-            self.bots[bot_id] = self._build_state(bot_id, genoma, first_index)
+            self.bots[bot_id] = self._build_state(
+                bot_id, genoma, first_index, resume=True
+            )
 
     # ------------------------------------------------------------------ bucle
 
@@ -431,7 +547,7 @@ class GardenRunner:
         arranque = (self._index_of(ultimo_ts) + 1) if ultimo_ts is not None else 0
         self._load_population(max(0, arranque))
         self._restore_benchmark(arranque)
-        if ultimo and arranque > 0:
+        if ultimo and arranque > 0 and self._legacy_resume:
             self._rebuild_pending_orders(arranque - 1)
 
         self.clock = MarketClock(
@@ -467,17 +583,20 @@ class GardenRunner:
             self.shutdown()
 
     def _rebuild_pending_orders(self, t: int) -> None:
-        """Reconstruye la cola de órdenes que dejó la caída.
+        """Aproxima la cola de órdenes de un jardín anterior a ``bot_runtime``.
 
         Una orden decidida en la vela ``t`` se rellena en la apertura de
-        ``t+1``. Si el proceso muere entre medias, esa intención vive sólo en
-        memoria y al reanudar el bot se habría saltado su entrada. Volver a
-        decidir sobre ``t`` la reproduce exactamente: la decisión es pura y la
-        cartera se ha restaurado tal y como quedó al cerrar esa vela.
+        ``t+1``. Los jardines de D-033 en adelante guardan esa cola tal cual y
+        no pasan por aquí; los anteriores no la tienen en ninguna parte, así
+        que se vuelve a decidir sobre ``t``, que es lo más cerca que se puede
+        estar: la decisión es pura y la cartera se ha restaurado.
         """
         if t < 0 or t >= len(self.master.ts):
             return
-        for estado in self.bots.values():
+        for bot_id in sorted(self._legacy_resume):
+            estado = self.bots.get(bot_id)
+            if estado is None:
+                continue
             serie = self.series[estado.symbol]
             i = int(serie.local[t])
             if i < 0 or t < estado.warmup or t < estado.first_index or serie.gap_ahead[i]:
@@ -708,6 +827,7 @@ class GardenRunner:
         momento = int(self.master.ts[tick.index])
 
         filas = []
+        vivo = []
         capital = 0.0
         abiertas = 0
         for estado in self.bots.values():
@@ -723,12 +843,14 @@ class GardenRunner:
             self.repos.bots.update_equity(
                 estado.bot_id, equity, port.cash, port.peak_equity
             )
+            vivo.append((estado.bot_id, momento, self._runtime_payload(estado)))
         if filas:
             self.db.executemany(
                 "INSERT OR REPLACE INTO equity_snapshots (bot_id, ts, equity, cash, "
                 "position_value, drawdown) VALUES (?,?,?,?,?,?)",
                 filas,
             )
+        self.repos.bots.save_runtime(vivo)
 
         benchmark = self._benchmark_value(tick.index)
         self._garden_peak = max(self._garden_peak, capital)
@@ -865,6 +987,7 @@ class GardenRunner:
                     # Las posiciones de un muerto se cierran al precio de cierre
                     # de la vela que cerró la generación, no se abandonan.
                     self._close_all(estado, tick, estado.last_price)
+                    self.repos.bots.drop_runtime(bot_id)
                     self._benchmark_units[estado.symbol] = max(
                         0.0,
                         self._benchmark_units.get(estado.symbol, 0.0)
@@ -1098,6 +1221,7 @@ class GardenRunner:
         if estado is None:
             return
         estado.broker.cancel_all()
+        self.repos.bots.drop_runtime(bot_id)
         self._benchmark_units[estado.symbol] = max(
             0.0, self._benchmark_units.get(estado.symbol, 0.0) - estado.benchmark_units
         )

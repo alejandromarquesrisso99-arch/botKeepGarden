@@ -276,6 +276,23 @@ CREATE INDEX IF NOT EXISTS ix_trades_gen  ON trades(generation);
 CREATE INDEX IF NOT EXISTS ix_trades_open ON trades(is_open) WHERE is_open = 1;
 
 -- --------------------------------------------------------------------------
+-- Estado vivo de la cartera
+--
+-- Lo que un bot lleva en memoria y no cabe en `trades`: el ancla del trailing,
+-- el 1R de cada posición, las velas que lleva aguantándola, la comisión que
+-- pagó al abrirla, las órdenes encoladas para la apertura siguiente y el
+-- enfriamiento. Se reescribe en cada tick, dentro de la misma transacción que
+-- las órdenes, y es lo que permite matar el jardín y reanudarlo exactamente
+-- donde estaba. Ver docs/DECISIONS.md D-033.
+-- --------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS bot_runtime (
+    bot_id          TEXT PRIMARY KEY REFERENCES bots(bot_id),
+    ts              INTEGER NOT NULL,       -- última vela procesada
+    payload         TEXT NOT NULL           -- JSON, ver engine/runner.py
+);
+
+-- --------------------------------------------------------------------------
 -- Curvas de capital
 --
 -- Una fila por (bot, vela). Es la tabla que más crece: 60 bots x 8760 velas al

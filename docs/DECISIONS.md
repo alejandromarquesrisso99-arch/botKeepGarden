@@ -636,3 +636,51 @@ importa `evolution/population.py` para cerrar generación. Es inherente al
 contrato del hito 5 —el andamiaje puso el bucle en `engine/` y cerrar una
 generación *es* evolución— y no se arregla moviendo el archivo, sino decidiendo
 que el orquestador puede mirar hacia arriba. El resto de `engine/` sigue limpio.
+
+---
+
+### D-033 · 2026-09-21 · El estado vivo de cada cartera se guarda en `bot_runtime`
+
+**Contexto.** El jardín presumía de poder morir y resucitar sin perder nada, y
+el test que lo probaba pasaba… porque el corte nunca caía sobre una posición
+abierta. Forzando un corte a mitad de una operación, la única que cruzaba el
+corte se cerraba distinta:
+
+| | entero | reanudado |
+|---|---|---|
+| `pnl_net` | 7,8187 | **8,1764** |
+| `fees` | 0,7240 | **0,3663** |
+| `holding_bars` | 14 | **10** |
+
+La causa: la posición se reconstruía desde `trades`, que guarda lado, tamaño,
+precio de entrada, stop y take, y **no** guarda lo que sólo vivía en memoria —
+el ancla del trailing, el 1R, las velas aguantadas, la comisión de entrada, el
+enfriamiento de la cartera ni la cola de órdenes del broker—. Reanudar perdía
+la comisión de entrada (de ahí el PnL inflado) y reiniciaba el contador de
+velas (de ahí el `EXIT_TIME` que llegaba tarde).
+
+**Decisión.** Una tabla `bot_runtime` (bot_id, ts, payload JSON) con el estado
+vivo completo de cada cartera: todas las posiciones con todos sus campos, la
+cola de órdenes pendientes, el enfriamiento y las comisiones acumuladas. Se
+reescribe en cada tick **dentro de la transacción del tick**, junto a las
+órdenes y a `last_tick_ts`: o está el tick entero o no está. El diseño es el
+que Alex tenía implementado en local; esto lo porta.
+
+Con la cola de órdenes guardada tal cual, `_rebuild_pending_orders` —que la
+aproximaba volviendo a decidir sobre la última vela— deja de hacer falta.
+Sobrevive para un solo caso: un jardín anterior a esta decisión, que no tiene
+estado vivo escrito. Ese arranque reconstruye lo que `trades` sabe y aproxima
+el resto, una única vez, porque el primer tick ya escribe estado de verdad.
+
+**Esquema.** `SCHEMA_VERSION` pasa a 2 y `migrate()` deja de ser un sello: como
+todo `schema.sql` se crea con `IF NOT EXISTS`, volver a pasarlo entero es una
+migración aditiva idempotente. Se aplica ahora también al abrir **sin crear**,
+que es como abre `keepgarden run`; si no, el motor se encontraría con una tabla
+que su código da por hecha. Los cambios destructivos seguirán necesitando su
+script en `migrations/`.
+
+**Consecuencias.** El coste por tick es una fila por bot vivo, del tamaño de
+sus posiciones abiertas: con 60 bots, decenas de KB. El test de reanudación ya
+no elige el corte a ojo: lo busca sobre una operación abierta y falla si no
+encuentra ninguna, porque un test de reanudación que no reanuda nada no prueba
+nada.

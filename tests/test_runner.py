@@ -245,6 +245,68 @@ def test_matarlo_a_mitad_y_relanzarlo_no_cambia_nada(
         assert eq_a == pytest.approx(eq_b, rel=1e-9)
 
 
+def _operaciones(repos) -> list[tuple]:
+    """El registro completo de operaciones, con todo lo que puede divergir."""
+    return [
+        tuple(f) for f in repos.db.query(
+            "SELECT bot_id, open_ts, close_ts, open_price, close_price, "
+            "round(pnl_net, 9), round(fees, 9), exit_kind, holding_bars "
+            "FROM trades ORDER BY bot_id, open_ts"
+        )
+    ]
+
+
+def _tirada(tmp_path: Path, cfg: Config, catalog, velas, corte: int | None) -> list[tuple]:
+    """Corre el jardín entero, opcionalmente matándolo en el tick ``corte``."""
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=6, velas=velas)
+    try:
+        if corte is not None:
+            GardenRunner(cfg=config, db=db, verbose=False).run(
+                dry_run=True, max_ticks=corte
+            )
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
+        return _operaciones(repos)
+    finally:
+        db.close()
+
+
+def _tick_a_mitad_de_una_operacion(operaciones, velas) -> int | None:
+    """Un tick en el que alguien tiene una posición abierta desde antes.
+
+    Se busca en vez de fijarlo para que el test siga probando lo que dice
+    aunque cambien la semilla, los genomas o las velas.
+    """
+    for i in range(1, len(velas)):
+        anterior, actual = int(velas.index[i - 1]), int(velas.index[i])
+        for op in operaciones:
+            abierta, cerrada = op[1], op[2]
+            if abierta <= anterior and cerrada is not None and cerrada >= actual:
+                return i
+    return None
+
+
+def test_reanudar_a_mitad_de_una_operacion_no_la_cambia(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """Matar el jardín con una posición abierta y relanzarlo no puede moverla.
+
+    Lo que un bot lleva en memoria —el ancla del trailing, el 1R, las velas
+    aguantadas, la comisión que pagó al entrar— no cabe en ``trades``. Antes de
+    ``bot_runtime`` se perdía, y la única operación que cruzaba el corte se
+    cerraba con otras comisiones y otra duración. Ver docs/DECISIONS.md D-033.
+    """
+    velas = _velas()
+    entero = _tirada(tmp_path / "entero", cfg, catalog, velas, corte=None)
+
+    corte = _tick_a_mitad_de_una_operacion(entero, velas)
+    assert corte is not None, (
+        "ningún bot aguanta una posición de una vela a otra: el test no prueba nada"
+    )
+
+    partido = _tirada(tmp_path / "partido", cfg, catalog, velas, corte=corte)
+    assert partido == entero
+
+
 def test_un_tick_reprocesado_no_duplica_ordenes(
     tmp_path: Path, cfg: Config, catalog
 ) -> None:
@@ -337,8 +399,12 @@ def test_el_freno_de_drawdown_mata_al_bot_en_el_acto(
         if muertos:
             assert len(frenazos) == len(muertos)
             assert all(f["severity"] == "warn" for f in frenazos)
+            vivos = {
+                f["bot_id"] for f in repos.db.query("SELECT bot_id FROM bot_runtime")
+            }
             for m in muertos:
                 assert m["bot_id"] not in runner.bots       # deja de operar
+                assert m["bot_id"] not in vivos             # y deja de tener estado
         # Con o sin muertos, el jardín sigue en pie y coherente.
         assert repos.db.query_one("SELECT COUNT(*) AS n FROM garden_equity")["n"] == 300
     finally:

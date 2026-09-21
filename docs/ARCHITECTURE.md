@@ -116,7 +116,7 @@ que alimenta el árbol genealógico del dashboard.
  [6] MARK       portfolio.py revalora, aplica stops/trailing/time-stop
         │
         ▼
- [7] PERSIST    equity_snapshots + trades + events
+ [7] PERSIST    equity_snapshots + trades + bot_runtime + events
         │
         ▼
  [8] REFLEX     circuit breakers: un bot cuyo drawdown supera el límite duro se
@@ -199,3 +199,9 @@ El jardín debe poder morir y resucitar sin perder nada:
   velas que se perdió mientras estaba caído (*catch-up*), procesándolas en orden.
 - Un tick es idempotente: reprocesar la vela `t` no debe duplicar trades. La
   clave es `(bot_id, candle_ts)` única en `orders`.
+- Lo que una cartera lleva en memoria y no cabe en `trades` —el ancla del
+  trailing, el 1R, las velas aguantadas, la comisión de entrada, el
+  enfriamiento y la cola de órdenes del broker— se escribe cada tick en
+  `bot_runtime`, dentro de la misma transacción. Sin eso, una posición que
+  cruza el reinicio se cierra con otras comisiones y otra duración: ver
+  docs/DECISIONS.md D-033.

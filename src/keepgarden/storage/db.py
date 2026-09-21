@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
@@ -67,12 +67,17 @@ class Database:
         self.migrate()
 
     def migrate(self) -> None:
-        """Aplica migraciones pendientes comparando ``garden_meta.schema_version``.
+        """Pone al día un jardín ya existente comparando ``schema_version``.
 
-        Mientras el jardín esté en desarrollo y no haya datos que valgan, una
-        migración puede ser destructiva; en cuanto haya un jardín corriendo de
-        verdad, cada cambio de esquema necesita su script en ``migrations/``.
+        Las tablas y los índices de ``schema.sql`` se crean con ``IF NOT
+        EXISTS``, así que volver a pasar el script entero es una migración
+        aditiva idempotente: un jardín viejo gana las tablas nuevas sin perder
+        una fila. Lo que no cubre es quitar o cambiar columnas; el día que haga
+        falta, cada cambio destructivo necesita su script en ``migrations/`` y
+        se aplica aquí en orden, antes de volver a pasar el esquema.
         """
+        if self.read_only or not self._has_table("garden_meta"):
+            return
         actual = int(self.get_meta("schema_version") or SCHEMA_VERSION)
         if actual > SCHEMA_VERSION:
             raise SchemaTooNew(
@@ -81,9 +86,14 @@ class Database:
                 f"tocar este jardín."
             )
         if actual < SCHEMA_VERSION:
-            # Todavía no hay ninguna migración que aplicar. Cuando la haya, su
-            # script vive en migrations/ y se aplica aquí en orden.
+            self.connect().executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
             self.set_meta("schema_version", str(SCHEMA_VERSION))
+
+    def _has_table(self, name: str) -> bool:
+        fila = self.query_one(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        )
+        return fila is not None
 
     def snapshot(self, tag: str = "") -> Path:
         """Copia la base a ``state/db/snapshots/garden_<gen>_<tag>.db``.
@@ -182,6 +192,10 @@ def open_database(path: Path | str, *, read_only: bool = False, create: bool = T
         db.initialize()
     else:
         db.connect()
+        # Un jardín que se abre sin crear puede venir de una versión anterior:
+        # ponerlo al día aquí es lo que hace que `keepgarden run` no se
+        # encuentre con una tabla que su código da por hecha.
+        db.migrate()
     return db
 
 

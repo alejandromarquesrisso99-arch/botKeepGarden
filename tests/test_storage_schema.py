@@ -25,7 +25,7 @@ def test_el_esquema_se_aplica(con: sqlite3.Connection) -> None:
     tablas = _names(con, "table")
     esperadas = {
         "garden_meta", "genomes", "bots", "parentage", "generations", "bot_metrics",
-        "orders", "trades", "equity_snapshots", "garden_equity", "species",
+        "orders", "trades", "bot_runtime", "equity_snapshots", "garden_equity", "species",
         "genetic_distances", "events", "alerts", "gardener_sessions",
         "gardener_decisions", "incubation_runs", "holdout_results",
         "data_gaps", "data_anomalies",

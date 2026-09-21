@@ -133,6 +133,30 @@ def test_las_transacciones_se_pueden_anidar(db: Database) -> None:
     assert len(db.query("SELECT * FROM generations")) == 2
 
 
+def test_un_jardin_viejo_gana_las_tablas_nuevas_al_abrirlo(tmp_path: Path) -> None:
+    """Abrir sin crear tiene que poner al día un jardín de una versión anterior.
+
+    ``keepgarden run`` abre con ``create=False`` —no quiere fabricar un jardín
+    por una errata en la ruta—, así que si la puesta al día viviera sólo en
+    ``initialize`` el motor se encontraría con una tabla que su código da por
+    hecha. Ver docs/DECISIONS.md D-033.
+    """
+    ruta = tmp_path / "viejo.db"
+    base = open_database(ruta)
+    base.execute("DROP TABLE bot_runtime")          # así era el esquema 1
+    base.set_meta("schema_version", "1")
+    base.close()
+
+    puesto_al_dia = open_database(ruta, create=False)
+    try:
+        assert puesto_al_dia.get_meta("schema_version") == str(SCHEMA_VERSION)
+        assert puesto_al_dia.query_one(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'bot_runtime'"
+        ) is not None
+    finally:
+        puesto_al_dia.close()
+
+
 def test_una_base_de_esquema_futuro_no_se_abre(tmp_path: Path) -> None:
     ruta = tmp_path / "futuro.db"
     base = open_database(ruta)
