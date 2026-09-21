@@ -6,6 +6,21 @@ Binance spot vía `ccxt`, endpoint público de klines. No hace falta clave API p
 leer velas. Motivos: histórico largo y gratuito, 24/7, buena liquidez en los
 pares principales, y `ccxt` permite cambiar de venue después sin tocar el resto.
 
+Ese "sin tocar el resto" es literal: `market.venue` se le pasa tal cual a
+`ccxt` y vale cualquier exchange que la librería conozca —`kraken`, `coinbase`,
+`bitstamp`…—; un identificador desconocido levanta `VenueError` al construir el
+cliente, no a mitad de una descarga. Es la salida cuando una red filtra Binance,
+cosa habitual en redes corporativas y universitarias.
+
+Cambiar de venue obliga a revisar dos cosas: las comisiones reales
+(`frictions.taker_fee_bps`), porque evolucionar contra una fricción irreal
+produce bots que sólo existen en la configuración, y el nombre de los pares,
+que no es el mismo en todas partes. La caché está separada por venue, así que
+los datos de dos exchanges nunca se mezclan.
+
+El cliente es de sólo lectura y no lleva credenciales: no podría operar aunque
+alguien se lo pidiera.
+
 ## Timeframe
 
 **1 hora, velas cerradas.** Una vela se considera disponible sólo cuando su

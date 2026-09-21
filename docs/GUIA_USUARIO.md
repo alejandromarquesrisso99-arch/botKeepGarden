@@ -75,6 +75,55 @@ keepgarden data backfill --symbol ETH/USDT --timeframe 1h --since 2019-01-01
 keepgarden data backfill --symbol SOL/USDT --timeframe 1h --since 2020-08-01
 ```
 
+### Sobre la conexión: no hay nada que dar de alta
+
+El jardín usa **sólo datos públicos**. No necesita API keys, ni cuenta, ni
+permisos: ni para el histórico ni para el jardín vivo, porque las órdenes se
+simulan contra las velas y no salen a ningún sitio. Si algo te pide claves de
+Binance, desconfía.
+
+Lo único que hace falta es que tu máquina alcance `api.binance.com`.
+Compruébalo en diez segundos antes de lanzar un backfill largo:
+
+```powershell
+python -c "import ccxt; print(ccxt.binance().fetch_ohlcv('BTC/USDT','1h',limit=1))"
+```
+
+Si imprime números, vía libre. Si da `NetworkError` o `timed out`, tu red lo
+está filtrando — pasa en muchas redes corporativas y universitarias. Tres
+salidas, de menos a más intrusiva:
+
+**1. Otra red, una sola vez.** Comparte datos desde el móvil y haz el backfill.
+Las velas quedan en `state\cache\` y a partir de ahí `seed`, `incubate`,
+`run --dry-run`, el dashboard y los informes funcionan sin internet. Sólo el
+jardín vivo necesita conexión continua, porque pide una vela cada hora.
+
+**2. A través de un proxy.** `ccxt` usa `requests` por debajo, así que respeta
+las variables de entorno de siempre:
+
+```powershell
+$env:HTTPS_PROXY = "http://proxy.ejemplo.es:8080"
+```
+
+**3. Cambiar de exchange.** `market.venue` se le pasa tal cual a `ccxt`, sin
+lista blanca: vale cualquier identificador que esa librería conozca
+(`kraken`, `coinbase`, `bitstamp`…). Un id desconocido da un error claro al
+instante.
+
+```yaml
+market:
+  venue: kraken
+frictions:
+  taker_fee_bps: 26.0    # Kraken cobra ~0.26 %, no el 0.10 % de Binance
+```
+
+Dos avisos si tomas este camino. **Ajusta las comisiones de verdad**:
+evolucionar contra una fricción irreal produce bots que sólo existen en la
+configuración. Y **los símbolos cambian de nombre** entre exchanges; si el par
+no existe verás un `BadSymbol` inmediato, sin reintentos. La caché está
+separada por venue (`state\cache\candles\KRAKEN\…`), así que no se mezclan
+datos de dos sitios.
+
 ---
 
 ## 3. Sembrar el jardín
@@ -344,7 +393,16 @@ Señales de que algo va mal, por orden de gravedad:
 
 **El jardín entra en `DEGRADED`** — el venue lleva cinco fallos seguidos. Sigue
 registrando y no opera. Se recupera solo cuando Binance vuelve; en la vista
-*Salud* verás los frenazos de las últimas 24 horas.
+*Salud* verás los frenazos de las últimas 24 horas. Si es tu red la que
+filtra, mira las tres salidas de la sección 2.
+
+**`NetworkError` o `timed out` al descargar velas** — el venue no te contesta.
+El cliente reintenta cuatro veces con espera creciente antes de rendirse, y lo
+descargado hasta ese punto queda guardado: relanzar el backfill continúa donde
+se quedó. Sección 2 para las alternativas.
+
+**`BadSymbol`** — ese par no existe en ese exchange. No se reintenta: insistir
+no lo va a crear.
 
 **El dashboard no pinta los gráficos** — ECharts se carga de un CDN. Sin
 internet, las tablas siguen funcionando y cada gráfico lo avisa en su hueco.
