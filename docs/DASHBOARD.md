@@ -93,6 +93,19 @@ Las entradas del diario en orden inverso, cada una con las propuestas que
 generó, su estado (aplicada / rechazada / pendiente de revisión) y el resultado
 medido frente al efecto esperado.
 
+### 8. Salud  ← *añadida en el hito 8*
+
+Lo que hay que poder responder de un vistazo antes de dejar el jardín corriendo
+treinta días:
+
+- ¿Sigue latiendo? Estado, última vela procesada y cuánto se ha quedado atrás.
+  Menos de dos velas de retraso es ir al día.
+- ¿Le llegan las velas? Latencia del venue, frenazos en las últimas 24 horas,
+  huecos y anomalías por serie.
+- ¿Va sobrado de tiempo? Milisegundos del último tick frente al hueco entre
+  velas.
+- Mercados del jardín, copias guardadas y alertas abiertas.
+
 ## API
 
 Sólo lectura. Todo bajo `/api`.
@@ -118,6 +131,9 @@ GET  /api/alerts
 GET  /api/breeding
 GET  /api/incubation/{n}
 GET  /api/species/scatter
+
+# salud del sistema (hito 8)
+GET  /api/health
 ```
 
 `/api/lineage/graph` acepta `until_generation` precisamente para alimentar el

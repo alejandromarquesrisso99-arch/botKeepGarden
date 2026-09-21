@@ -333,8 +333,47 @@ def _open_garden(cfg: Config, *, create: bool = True):
     return db, Repositories.open(db)
 
 
+def _split_evenly(total: int, partes: int) -> list[int]:
+    """Reparte ``total`` entre ``partes`` lo más parejo posible."""
+    base, resto = divmod(max(0, total), max(1, partes))
+    return [base + (1 if i < resto else 0) for i in range(partes)]
+
+
+def _symbols_for_seed(args: argparse.Namespace, cfg: Config) -> list[str]:
+    """Los mercados que se van a sembrar, comprobando que hay velas de todos.
+
+    Sembrar un bot sobre un mercado sin velas es crear un bot que nunca podrá
+    operar, así que se avisa y no se siembra.
+    """
+    from .data.store import CandleStore, SeriesKey
+
+    pedidos = (
+        [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+        if getattr(args, "symbols", None)
+        else list(cfg.market.symbols)
+    )
+    store = CandleStore(cache_dir=cfg.path(cfg.storage.cache_dir))
+    con_velas, sin_velas = [], []
+    for simbolo in pedidos:
+        clave = SeriesKey(cfg.market.venue, simbolo, cfg.market.timeframe)
+        (con_velas if store.count(clave) else sin_velas).append(simbolo)
+
+    for simbolo in sin_velas:
+        print(
+            f"  aviso: no hay velas de {simbolo} en caché, no se siembra. "
+            f"Descárgalas con 'keepgarden data backfill --symbol {simbolo}'.",
+            file=sys.stderr,
+        )
+    if not con_velas:
+        print(
+            "ningún mercado tiene velas: no hay dónde sembrar.", file=sys.stderr
+        )
+    return con_velas
+
+
 def cmd_garden_seed(args: argparse.Namespace) -> int:
     """Siembra la población inicial y crea la base del jardín."""
+    import json
     import random
     import time
 
@@ -368,18 +407,32 @@ def cmd_garden_seed(args: argparse.Namespace) -> int:
             )
             return EXIT_ERROR
 
-        market = MarketSpec(
-            venue=cfg.market.venue, symbol=cfg.primary_symbol,
-            timeframe=cfg.market.timeframe,
-        )
+        simbolos = _symbols_for_seed(args, cfg)
+        if not simbolos:
+            return EXIT_ERROR
         rng = random.Random(cfg.seed)
-        print(f"sembrando {tamaño} bots sobre {market.symbol} {market.timeframe}…")
-        genomas = random_population(tamaño, market, cfg, catalog, rng)
-        if len(genomas) < tamaño:
-            print(
-                f"  aviso: sólo han salido {len(genomas)} genomas válidos",
-                file=sys.stderr,
+        reparto = _split_evenly(tamaño, len(simbolos))
+        print(
+            f"sembrando {tamaño} bots sobre {', '.join(simbolos)} "
+            f"{cfg.market.timeframe}…"
+        )
+
+        genomas = []
+        for simbolo, cuantos in zip(simbolos, reparto):
+            mercado = MarketSpec(
+                venue=cfg.market.venue, symbol=simbolo, timeframe=cfg.market.timeframe
             )
+            parcial = random_population(cuantos, mercado, cfg, catalog, rng)
+            if len(parcial) < cuantos:
+                print(
+                    f"  aviso: en {simbolo} sólo han salido {len(parcial)} "
+                    f"genomas válidos de {cuantos}",
+                    file=sys.stderr,
+                )
+            genomas.extend(parcial)
+        market = MarketSpec(
+            venue=cfg.market.venue, symbol=simbolos[0], timeframe=cfg.market.timeframe
+        )
 
         ahora = int(time.time() * 1000)
         with db.transaction():
@@ -397,6 +450,7 @@ def cmd_garden_seed(args: argparse.Namespace) -> int:
             db.set_meta("current_generation", 0)
             db.set_meta("seed", cfg.seed)
             db.set_meta("symbol", market.symbol)
+            db.set_meta("symbols", json.dumps(simbolos))
             db.set_meta("timeframe", market.timeframe)
             db.set_meta("venue", market.venue)
 
@@ -404,14 +458,20 @@ def cmd_garden_seed(args: argparse.Namespace) -> int:
             genomas, cfg.speciation.distance_weights, catalog
         )
         familias: dict[str, int] = {}
+        por_simbolo: dict[str, int] = {}
         for g in genomas:
             familias[str(g.family)] = familias.get(str(g.family), 0) + 1
+            por_simbolo[g.market.symbol] = por_simbolo.get(g.market.symbol, 0) + 1
 
         print(f"\n{len(genomas)} bots vivos en {cfg.db_file}")
         print(f"diversidad genética  {diversidad:.3f}"
               f"  (suelo {cfg.evolution.diversity_floor})")
         for familia, n in sorted(familias.items()):
             print(f"  {familia:<16} {n:>3}  {n / len(genomas):>5.0%}")
+        if len(por_simbolo) > 1:
+            print()
+            for simbolo, n in sorted(por_simbolo.items()):
+                print(f"  {simbolo:<16} {n:>3}  {n / len(genomas):>5.0%}")
         print("\nprimeros bots:")
         for genoma in genomas[:5]:
             print(f"  {label(bot_id_of(genoma.id))}  {genoma.family}")
@@ -960,6 +1020,82 @@ def cmd_gardener_apply(args: argparse.Namespace) -> int:
         db.close()
 
 
+def cmd_robustness(args: argparse.Namespace) -> int:
+    """Informe de robustez: fricción, desplazamiento del inicio y Monte Carlo."""
+    from .config import load_config
+    from .evaluation.robustness import analyse, format_report
+    from .genome.schema import MarketSpec
+
+    cfg = load_config(args.config)
+    if not cfg.db_file.exists():
+        print("no hay jardín todavía. Siémbralo con 'keepgarden garden seed'.", file=sys.stderr)
+        return EXIT_ERROR
+
+    db, repos = _open_garden(cfg, create=False)
+    try:
+        if args.bot:
+            filas = [repos.bots.get(args.bot)]
+            if filas[0] is None:
+                print(f"no hay ningún bot con id {args.bot!r}", file=sys.stderr)
+                return EXIT_ERROR
+        else:
+            filas = db.query(
+                "SELECT * FROM bots WHERE status = 'ALIVE' "
+                "ORDER BY fitness_effective DESC NULLS LAST LIMIT ?",
+                (int(args.top),),
+            )
+        if not filas:
+            print("el jardín no tiene bots vivos que analizar.", file=sys.stderr)
+            return EXIT_ERROR
+
+        vivos = repos.bots.alive_genomes()
+        informes = []
+        print(f"analizando {len(filas)} bots con fricción ×1, ×2 y ×3, "
+              f"cuatro desplazamientos del inicio y Monte Carlo…\n")
+        for fila in filas:
+            genoma = repos.bots.genome_of(fila["bot_id"])
+            market = MarketSpec(
+                venue=cfg.market.venue, symbol=genoma.market.symbol,
+                timeframe=genoma.market.timeframe,
+            )
+            velas, _ = _candles_for(cfg, market)
+            if velas.empty:
+                print(f"  {fila['name']}: sin velas de {market.symbol}, se salta",
+                      file=sys.stderr)
+                continue
+            # El holdout no se toca: se mide sobre el mismo tramo entrenable
+            # que ve la incubadora.
+            from .evaluation.walkforward import make_split
+
+            corte = make_split(len(velas), cfg.incubator).holdout_start
+            informe = analyse(
+                genoma, velas.iloc[:corte], cfg,
+                bot_id=str(fila["name"]),
+                members=vivos if genoma.is_ensemble else None,
+                runs=int(args.runs),
+            )
+            informes.append(informe)
+            veredicto = "aguanta" if informe.survives else "NO aguanta"
+            print(f"  {fila['name']:<28} {veredicto} el doble de fricción")
+
+        if not informes:
+            return EXIT_ERROR
+
+        texto = format_report(informes)
+        if args.stdout:
+            print("\n" + texto)
+            return EXIT_OK
+
+        destino = cfg.path(cfg.gardener.report_dir)
+        destino.mkdir(parents=True, exist_ok=True)
+        ruta = destino / "robustez.md"
+        ruta.write_text(texto, encoding="utf-8")
+        print(f"\ninforme en {ruta}")
+        return EXIT_OK
+    finally:
+        db.close()
+
+
 def cmd_config_show(args: argparse.Namespace) -> int:
     """Carga y valida la configuración, y la imprime resuelta."""
     import json
@@ -1053,6 +1189,10 @@ def build_parser() -> argparse.ArgumentParser:
     gs = garden_sub.add_parser("seed", help="siembra la población inicial")
     gs.add_argument("--size", type=int, default=None, help="por defecto, garden.target_population")
     gs.add_argument("--reset", action="store_true", help="borra el jardín existente (¡destructivo!)")
+    gs.add_argument(
+        "--symbols", default=None,
+        help="mercados separados por comas; por defecto, market.symbols de la config",
+    )
     gs.set_defaults(func=cmd_garden_seed)
 
     gst = garden_sub.add_parser("status", help="resumen del jardín")
@@ -1104,6 +1244,14 @@ def build_parser() -> argparse.ArgumentParser:
     ga.add_argument("--dry-run", action="store_true", help="sólo valida, no aplica")
     ga.add_argument("--journal", default="", help="entrada de diario de la sesión")
     ga.set_defaults(func=cmd_gardener_apply)
+
+    # -- robustez ---------------------------------------------------------- #
+    rob = sub.add_parser("robustness", help="informe de robustez de los mejores bots")
+    rob.add_argument("--bot", default=None, help="un bot concreto por id")
+    rob.add_argument("--top", type=int, default=3, help="cuántos de los mejores (por defecto 3)")
+    rob.add_argument("--runs", type=int, default=1000, help="barajadas del Monte Carlo")
+    rob.add_argument("--stdout", action="store_true", help="imprime en vez de escribir el archivo")
+    rob.set_defaults(func=cmd_robustness)
 
     # -- config / catalog -------------------------------------------------- #
     cs = sub.add_parser("config", help="muestra la configuración resuelta y validada")

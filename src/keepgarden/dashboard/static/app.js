@@ -1158,6 +1158,95 @@ render.journal = async function () {
     )}</div>`;
 };
 
+// -- salud del sistema -------------------------------------------------------- //
+
+render.health = async function () {
+  const raiz = document.getElementById('view-health');
+  const h = await api('/health');
+
+  const minutos = (ms) => (ms == null ? '—' : `${Math.round(ms / 60000)} min`);
+  const estado = h.status === 'RUNNING' ? 'pos' : h.status === 'DEGRADED' ? 'neg' : '';
+  const fresco = h.fresh
+    ? '<span class="pos">al día</span>'
+    : `<span class="neg">${minutos(h.lag_ms)} por detrás</span>`;
+  const presupuesto = Math.round(h.tick_budget_ms / 60000);
+  const holgura =
+    h.tick_ms == null ? '—' : `${num(h.tick_ms, 1)} ms`;
+
+  raiz.innerHTML = `
+    <p class="hint">Lo que hay que poder responder de un vistazo antes de dejar esto
+      corriendo treinta días: ¿sigue latiendo?, ¿le llegan las velas?, ¿va sobrado de
+      tiempo entre una vela y la siguiente?</p>
+
+    <div class="cards">
+      ${tarjeta('Estado', `<span class="${estado}">${esc(h.status)}</span>`, `generación ${h.generation}`)}
+      ${tarjeta('Última vela', fresco, h.last_tick_ts ? new Date(h.last_tick_ts).toISOString().slice(0, 16).replace('T', ' ') : 'nunca')}
+      ${tarjeta('Tiempo por vela', holgura, `de ${presupuesto} min entre vela y vela`)}
+      ${tarjeta('Latencia del venue', h.venue_latency_ms == null ? '—' : `${num(h.venue_latency_ms, 0)} ms`, `${h.venue_failures_24h} frenazos en 24 h`)}
+      ${tarjeta('Alertas abiertas', h.alerts.length, h.alerts.length ? h.alerts.map((a) => esc(a.kind)).join(' · ') : 'ninguna')}
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h2>Mercados</h2>
+        <div class="panel">${tabla(
+          [{ label: 'Mercado' }, { label: 'Bots', num: true }, { label: 'Vivos', num: true }],
+          h.symbols.map((s) => [esc(s.symbol), s.bots, s.vivos]),
+          { empty: 'El jardín todavía no tiene bots.' }
+        )}</div>
+
+        <h2>Copias del jardín</h2>
+        <p class="hint">Un jardín es un archivo: copiarlo es todo el respaldo que
+          necesita. El motor guarda una cada tantas generaciones
+          (<code>storage.snapshot_every_generations</code>).</p>
+        <div class="panel">${tabla(
+          [{ label: 'Copia' }, { label: 'Tamaño', num: true }],
+          h.snapshots.map((s) => [`<code>${esc(s.name)}</code>`, `${s.size_mb} MB`]),
+          { empty: 'Todavía no se ha guardado ninguna copia.' }
+        )}</div>
+      </div>
+      <div>
+        <h2>Calidad de los datos</h2>
+        <div class="panel">${tabla(
+          [
+            { label: 'Serie' },
+            { label: 'Huecos', num: true },
+            { label: 'Velas perdidas', num: true },
+            { label: 'Rellenados', num: true },
+          ],
+          h.data_gaps.map((g) => [
+            `${esc(g.symbol)} ${esc(g.timeframe)}`,
+            g.huecos, g.velas_perdidas, g.rellenados,
+          ]),
+          { empty: 'Sin huecos registrados: la caché está completa.' }
+        )}</div>
+
+        <h2>Anomalías de mercado</h2>
+        <p class="hint">Velas con saltos imposibles, OHLC incoherente o volumen negativo.
+          El motor no opera sobre ellas.</p>
+        <div class="panel">${tabla(
+          [{ label: 'Tipo' }, { label: 'Veces', num: true }],
+          h.data_anomalies.map((a) => [esc(a.kind), a.n]),
+          { empty: 'Ninguna anomalía detectada.' }
+        )}</div>
+      </div>
+    </div>
+
+    <h2>Alertas abiertas</h2>
+    <div class="panel">${
+      h.alerts.length
+        ? h.alerts
+            .map(
+              (a) =>
+                `<div class="alert ${a.kind === 'GARDEN_DRAWDOWN' ? 'critical' : ''}">
+                   <strong>${esc(a.kind)}</strong> · ${num(a.value, 3)} frente a ${num(a.threshold, 3)}
+                   · desde la generación ${a.raised_gen}${a.detail ? ' · ' + esc(a.detail) : ''}</div>`
+            )
+            .join('')
+        : '<p class="empty">Ninguna.</p>'
+    }</div>`;
+};
+
 // -- ficha de bot ------------------------------------------------------------ //
 
 async function abrirBot(id) {

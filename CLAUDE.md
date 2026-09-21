@@ -105,7 +105,16 @@ pero cambiar su forma rompe el resto: si necesitas hacerlo, anótalo en
 ✅ dashboard/api.py, dashboard/app.py, dashboard/static/*  ← hito 6
    (`keepgarden dashboard`; se hizo antes que el hito 5 porque la evolución y la
    cría ya se podían mirar con lo que escribe `incubate`)
-🔨 todo lo demás (engine/clock.py, engine/runner.py, gardener/*)
+✅ engine/clock.py, engine/runner.py  ← hito 5 (`keepgarden run`)
+✅ gardener/report.py, gardener/apply.py, gardener/journal.py  ← hito 7
+   (`keepgarden report`, `keepgarden gardener apply`)
+✅ evaluation/robustness.py, multi-símbolo, snapshots, panel de salud  ← hito 8
+   (`keepgarden robustness`, `garden seed --symbols`)
+
+No queda ningún contrato con `NotImplementedError`. Lo único pendiente del
+roadmap es lo que necesita tiempo de reloj y red: 48 horas contra Binance y 30
+días seguidos de jardín. Y hay una cuestión de diseño abierta que sí importa:
+docs/DECISIONS.md **D-030**.
 ```
 
 ## Orden de trabajo

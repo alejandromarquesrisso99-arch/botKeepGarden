@@ -529,11 +529,81 @@ def fold_metrics_to_metrics(folds: Sequence[dict[str, float]]) -> Metrics:
     )
 
 
+@dataclass(slots=True)
+class MultiSymbolIncubator:
+    """Una incubadora por símbolo, con la interfaz de una sola.
+
+    Un jardín multi-símbolo no puede cribar un genoma de ETH contra las velas
+    de BTC. Cada candidato va a la incubadora de su mercado y los resultados se
+    devuelven juntos, así que ni la población ni el runner tienen que saber que
+    hay más de un símbolo.
+
+    Los vivos con los que se comparan los clones son también los de ese
+    símbolo: dos genomas idénticos sobre mercados distintos no son clones, son
+    la misma idea puesta a prueba en dos sitios.
+    """
+
+    incubators: dict[str, Incubator]
+    primary: str = ""
+
+    @property
+    def split(self) -> Split:
+        """El corte del símbolo primario, que es el que se enseña."""
+        clave = self.primary or next(iter(self.incubators))
+        return self.incubators[clave].split
+
+    def _for(self, genome: Genome) -> "Incubator | None":
+        return self.incubators.get(str(genome.market.symbol))
+
+    def _group(self, genomes: Sequence[Genome]) -> dict[str, list[Genome]]:
+        grupos: dict[str, list[Genome]] = {}
+        for g in genomes:
+            if self._for(g) is not None:
+                grupos.setdefault(str(g.market.symbol), []).append(g)
+        return grupos
+
+    def measure(
+        self,
+        genomes: Sequence[Genome],
+        *,
+        members: Mapping[BotId, Genome] | None = None,
+        workers: int | None = None,
+    ) -> dict[str, "FoldRun"]:
+        salida: dict[str, FoldRun] = {}
+        for simbolo, grupo in self._group(genomes).items():
+            salida.update(
+                self.incubators[simbolo].measure(grupo, members=members, workers=workers)
+            )
+        return salida
+
+    def screen(
+        self,
+        candidates: Sequence[Genome],
+        *,
+        alive_genomes: Sequence[Genome] = (),
+        generation: int = 0,
+        members: Mapping[BotId, Genome] | None = None,
+        reference: Mapping[str, RobustScale] | None = None,
+        workers: int | None = None,
+    ) -> list[IncubationResult]:
+        resultados: list[IncubationResult] = []
+        for simbolo, grupo in self._group(candidates).items():
+            vivos = [g for g in alive_genomes if str(g.market.symbol) == simbolo]
+            resultados.extend(
+                self.incubators[simbolo].screen(
+                    grupo, alive_genomes=vivos, generation=generation,
+                    members=members, reference=reference, workers=workers,
+                )
+            )
+        return resultados
+
+
 __all__ = (
     "PARALLEL_FROM",
     "FoldRun",
     "HoldoutViolation",
     "IncubationResult",
     "Incubator",
+    "MultiSymbolIncubator",
     "fold_metrics_to_metrics",
 )

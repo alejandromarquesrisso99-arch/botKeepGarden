@@ -221,6 +221,10 @@ def create_app(cfg: Config) -> FastAPI:
     def alerts() -> Any:
         return api_del_hilo().alerts()
 
+    @app.get("/api/health")
+    def health() -> Any:
+        return api_del_hilo().health()
+
     # -- front ------------------------------------------------------------- #
 
     @app.get("/")

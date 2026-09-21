@@ -284,6 +284,44 @@ def test_sin_curvas_de_capital_no_hay_heatmap_pero_tampoco_error(jardin) -> None
 
 
 # --------------------------------------------------------------------------- #
+# Salud del sistema                                                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_la_salud_dice_si_el_jardin_sigue_latiendo(jardin) -> None:
+    api, _ = jardin
+    h = api.health()
+    assert h["generation"] == 1
+    assert h["fresh"] is False          # este jardín de juguete no ha corrido nunca
+    assert h["last_tick_ts"] is None
+    assert h["data_gaps"] == [] and h["data_anomalies"] == []
+    assert h["venue_failures_24h"] == 0
+    assert {s["symbol"] for s in h["symbols"]} == {"BTC/USDT"}
+
+
+def test_la_salud_marca_como_fresco_un_jardin_al_dia(jardin) -> None:
+    """Menos de dos velas de retraso es ir al día; más, no.
+
+    El motor escribe con su propia conexión y el dashboard lee con la suya: es
+    exactamente la situación real, con el jardín corriendo al lado.
+    """
+    import time as _time
+
+    api, datos = jardin
+    motor = open_database(datos["ruta"], create=False)
+    try:
+        motor.set_meta("last_tick_ts", int(_time.time() * 1000) - 60_000)
+        assert api.health()["fresh"] is True
+
+        motor.set_meta("last_tick_ts", int(_time.time() * 1000) - 5 * 3_600_000)
+        salud = api.health()
+        assert salud["fresh"] is False
+        assert salud["lag_ms"] > 4 * 3_600_000
+    finally:
+        motor.close()
+
+
+# --------------------------------------------------------------------------- #
 # La promesa: sólo lectura                                                     #
 # --------------------------------------------------------------------------- #
 
@@ -315,6 +353,7 @@ def test_recorrer_toda_la_api_no_deja_la_base_modificada(jardin) -> None:
         api.species,
         api.species_scatter,
         api.species_correlation,
+        api.health,
         api.journal,
         api.events,
         api.alerts,

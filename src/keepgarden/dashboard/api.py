@@ -22,6 +22,7 @@ from typing import Any
 from ..config import Config
 from ..storage.db import Database
 from ..storage.repositories import Repositories
+from ..types import TIMEFRAME_MS
 
 #: Estados que cuentan como "sigue en el jardín".
 LIVE_STATES: frozenset[str] = frozenset({"ALIVE", "RETIRED"})
@@ -860,6 +861,83 @@ class DashboardAPI:
 
     def alerts(self) -> list[dict[str, Any]]:
         return [_cleaned(_row(f)) for f in self.repos.events.open_alerts()]
+
+    # -- salud del sistema -------------------------------------------------- #
+
+    def health(self) -> dict[str, Any]:
+        """Si el jardín está vivo, y si los datos con los que vive son buenos.
+
+        Las tres preguntas que hay que poder responder de un vistazo antes de
+        dejar esto corriendo treinta días: ¿sigue latiendo?, ¿le llegan las
+        velas?, ¿va sobrado de tiempo entre velas?
+        """
+        import time as _time
+
+        ahora = int(_time.time() * 1000)
+        ultimo = self._db.get_meta("last_tick_ts")
+        ultimo_ts = int(ultimo) if ultimo else None
+        tf_ms = TIMEFRAME_MS.get(
+            str(self._db.get_meta("timeframe") or self.cfg.market.timeframe), 3_600_000
+        )
+        retraso = (ahora - ultimo_ts) if ultimo_ts else None
+        tick_ms = self._db.get_meta("last_tick_ms")
+        latencia = self._db.get_meta("venue_latency_ms")
+
+        series = _rows(
+            self._db.query(
+                "SELECT venue, symbol, timeframe, COUNT(*) AS huecos, "
+                "SUM(n_missing) AS velas_perdidas, SUM(filled) AS rellenados "
+                "FROM data_gaps GROUP BY venue, symbol, timeframe"
+            )
+        )
+        anomalias = _rows(
+            self._db.query(
+                "SELECT kind, COUNT(*) AS n FROM data_anomalies GROUP BY kind ORDER BY n DESC"
+            )
+        )
+        fallos = self._db.query_one(
+            "SELECT COUNT(*) AS n FROM events WHERE type = 'CIRCUIT_BREAKER' AND ts > ?",
+            (ahora - 86_400_000,),
+        )
+        copias = sorted(
+            self.cfg.path(self.cfg.storage.db_path).parent.glob("*.db"),
+            key=lambda r: r.name,
+        )
+
+        return {
+            "status": self._db.get_meta("status") or "STOPPED",
+            "generation": self.current_generation(),
+            "last_tick_ts": ultimo_ts,
+            "lag_ms": retraso,
+            # Un jardín al día va por detrás menos de dos velas: la que acaba de
+            # cerrar más el margen de asentamiento.
+            "fresh": bool(retraso is not None and retraso < 2 * tf_ms),
+            "timeframe_ms": tf_ms,
+            "tick_ms": float(tick_ms) if tick_ms else None,
+            "tick_budget_ms": tf_ms,
+            "venue_latency_ms": float(latencia) if latencia else None,
+            "venue_failures_24h": int((fallos or {"n": 0})["n"] or 0),
+            "data_gaps": series,
+            "data_anomalies": anomalias,
+            "snapshots": [
+                {"name": r.name, "size_mb": round(r.stat().st_size / 1e6, 2)}
+                for r in copias
+                if r.name != self.cfg.path(self.cfg.storage.db_path).name
+            ][-10:],
+            "alerts": self.alerts(),
+            "symbols": self._symbols(),
+        }
+
+    def _symbols(self) -> list[dict[str, Any]]:
+        """Los mercados del jardín y cuántos bots vivos opera cada uno."""
+        return _rows(
+            self._db.query(
+                "SELECT g.symbol, COUNT(*) AS bots, "
+                "SUM(b.status = 'ALIVE') AS vivos FROM bots b "
+                "JOIN genomes g ON g.genome_id = b.genome_id "
+                "GROUP BY g.symbol ORDER BY vivos DESC"
+            )
+        )
 
 
 __all__ = ("LIVE_STATES", "MAX_SCATTER_POINTS", "DashboardAPI", "reject_category")

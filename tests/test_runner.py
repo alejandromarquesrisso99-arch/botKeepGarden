@@ -9,7 +9,6 @@ significa nada y el dry-run no valida nada.
 from __future__ import annotations
 
 import random
-import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -281,7 +280,7 @@ def test_el_freno_de_drawdown_mata_al_bot_en_el_acto(
     """Un desplome del 60% en una vela: el bot no llega a fin de generación."""
     velas = _velas(300)
     velas.iloc[250:, :4] *= 0.35
-    config, db, repos, genomas = _sembrar(
+    config, db, repos, _genomas = _sembrar(
         tmp_path, cfg, catalog, n_bots=8, velas=velas
     )
     try:
@@ -309,7 +308,7 @@ def test_la_curva_del_jardin_lleva_su_espejo_de_buy_and_hold(
 ) -> None:
     """El benchmark recibe el mismo capital que el jardín, o no compara nada."""
     velas = _velas(300)
-    config, db, repos, genomas = _sembrar(tmp_path, cfg, catalog, n_bots=5, velas=velas)
+    config, db, repos, _genomas = _sembrar(tmp_path, cfg, catalog, n_bots=5, velas=velas)
     try:
         GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
         primera = repos.db.query_one("SELECT * FROM garden_equity ORDER BY ts LIMIT 1")
@@ -322,6 +321,111 @@ def test_la_curva_del_jardin_lleva_su_espejo_de_buy_and_hold(
         esperado = capital * float(velas["close"].iloc[-1] / velas["close"].iloc[0])
         assert ultima["benchmark_equity"] == pytest.approx(esperado, rel=1e-6)
         assert ultima["n_alive"] == repos.bots.count_alive()
+    finally:
+        db.close()
+
+
+def test_un_jardin_multisimbolo_opera_cada_bot_en_su_mercado(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """Cada bot opera el mercado de su genoma, y el reloj lo marca el primario."""
+    import json
+
+    from keepgarden.data.store import CandleStore, SeriesKey
+
+    btc = _velas(600, seed=21)
+    # Un segundo mercado con vida propia y, a propósito, sin las 100 primeras
+    # velas: los mercados no nacen todos el mismo día.
+    eth = _velas(600, seed=22).iloc[100:]
+
+    config, db, repos, _genomas = _sembrar(tmp_path, cfg, catalog, n_bots=4, velas=btc)
+    try:
+        store = CandleStore(cache_dir=config.path(config.storage.cache_dir))
+        store.append(
+            SeriesKey(config.market.venue, "ETH/USDT", config.market.timeframe),
+            eth.reset_index(),
+        )
+        # Cuatro bots más, esta vez sobre ETH.
+        mercado_eth = MarketSpec(
+            venue=config.market.venue, symbol="ETH/USDT",
+            timeframe=config.market.timeframe,
+        )
+        for g in random_population(4, mercado_eth, config, catalog, random.Random(8)):
+            repos.bots.create(g, generation=0, initial_capital=1000.0)
+        db.set_meta("symbols", json.dumps(["BTC/USDT", "ETH/USDT"]))
+
+        runner = GardenRunner(cfg=config, db=db, verbose=False)
+        runner.run(dry_run=True)
+
+        assert set(runner.series) == {"BTC/USDT", "ETH/USDT"}
+        # ETH empieza 100 velas más tarde: esas quedan sin alinear.
+        assert int((runner.series["ETH/USDT"].local < 0).sum()) == 100
+
+        por_mercado = repos.db.query(
+            "SELECT g.symbol, COUNT(*) AS ops FROM trades t "
+            "JOIN bots b ON b.bot_id = t.bot_id "
+            "JOIN genomes g ON g.genome_id = b.genome_id GROUP BY g.symbol"
+        )
+        assert {str(f["symbol"]) for f in por_mercado} <= {"BTC/USDT", "ETH/USDT"}
+
+        # Ninguna operación de un bot de ETH puede tener un precio de BTC.
+        for fila in repos.db.query(
+            "SELECT t.open_price FROM trades t JOIN bots b ON b.bot_id = t.bot_id "
+            "JOIN genomes g ON g.genome_id = b.genome_id WHERE g.symbol = 'ETH/USDT'"
+        ):
+            assert float(eth["low"].min()) <= float(fila["open_price"]) <= float(eth["high"].max())
+
+        # El reloj lo marca el primario: hay un punto de curva por vela de BTC.
+        assert repos.db.query_one(
+            "SELECT COUNT(*) AS n FROM garden_equity"
+        )["n"] == len(btc)
+    finally:
+        db.close()
+
+
+def test_un_bot_sin_vela_en_su_mercado_no_opera_ni_se_revalora(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """Inventar precio en un mercado parado es inventar rentabilidad."""
+    import json
+
+    from keepgarden.data.store import CandleStore, SeriesKey
+
+    btc = _velas(300, seed=31)
+    # ETH sólo tiene las velas pares: la mitad de los ticks no le tocan.
+    eth = _velas(300, seed=32).iloc[::2]
+
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=2, velas=btc)
+    try:
+        store = CandleStore(cache_dir=config.path(config.storage.cache_dir))
+        store.append(
+            SeriesKey(config.market.venue, "ETH/USDT", config.market.timeframe),
+            eth.reset_index(),
+        )
+        mercado_eth = MarketSpec(
+            venue=config.market.venue, symbol="ETH/USDT",
+            timeframe=config.market.timeframe,
+        )
+        genoma = random_population(1, mercado_eth, config, catalog, random.Random(4))[0]
+        bot_eth = repos.bots.create(genoma, generation=0, initial_capital=1000.0)
+        db.set_meta("symbols", json.dumps(["BTC/USDT", "ETH/USDT"]))
+
+        runner = GardenRunner(cfg=config, db=db, verbose=False)
+        runner.run(dry_run=True)
+
+        # Tiene un punto de curva por cada tick del reloj, aunque su mercado
+        # sólo tenga la mitad de las velas: se queda quieto, no desaparece.
+        puntos = repos.db.query(
+            "SELECT COUNT(*) AS n FROM equity_snapshots WHERE bot_id = ?", (bot_eth,)
+        )[0]["n"]
+        assert puntos == len(btc)
+
+        # Y ninguna de sus operaciones cae en un momento sin vela de ETH.
+        momentos = set(int(t) for t in eth.index)
+        for fila in repos.db.query(
+            "SELECT open_ts FROM trades WHERE bot_id = ?", (bot_eth,)
+        ):
+            assert int(fila["open_ts"]) in momentos
     finally:
         db.close()
 

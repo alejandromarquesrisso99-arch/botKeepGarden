@@ -248,7 +248,7 @@ def test_tune_no_toca_el_yaml_sino_la_base(jardin) -> None:
 
 
 def test_retire_jubila_y_cierra_posiciones(jardin) -> None:
-    config, db, repos, bots = jardin
+    config, _db, repos, bots = jardin
     from keepgarden.data.store import CandleStore, SeriesKey
 
     velas = _velas(200)

@@ -468,3 +468,109 @@ grafo.
 
 **Decisión.** Usar `dataclasses.asdict`. Es una corrección de un bug, no un
 cambio de forma: la firma y el contenido del diccionario son los prometidos.
+
+---
+
+### D-026 · 2026-09-21 · El jardín vivo mide con su ventana, no con el histórico
+
+**Contexto.** `Population.evolve_generation` calculaba las métricas de todos los
+vivos con el walk-forward de la incubadora, porque hasta el hito 5 no había
+ventana que cerrar. Con el jardín corriendo sí la hay, y la config ya decía qué
+hacer con ella: `fitness.live_weight: 0.70`.
+
+**Decisión.** `evolve_generation` acepta `window_metrics` y un `scope`
+(`live` | `incubator`). El runner le pasa las métricas de las 168 velas
+vividas, se guardan en `bot_metrics` con ámbito `live` y el fitness efectivo de
+cada bot pasa a ser `0.30 · incubadora + 0.70 · vivo`, con las dos generaciones
+de gracia de `effective_fitness`.
+
+De paso, `_persist` deja escrito en `bots` el fitness **vigente** y no el del
+día en que nació. Antes, un bot con veinte generaciones seguía mostrando en el
+dashboard la nota que sacó en la incubadora.
+
+**Consecuencias.** La selección sigue usando los valores en memoria, así que la
+evolución no cambia; lo que cambia es lo que se lee. Y aparece la tensión de
+D-030.
+
+---
+
+### D-027 · 2026-09-21 · En un dry-run, la incubadora sólo ve hasta hoy
+
+**Contexto.** Al cerrar una generación durante un replay, la incubadora criba
+a los candidatos contra el histórico. Si se le pasan las velas enteras, está
+mirando el futuro del propio replay.
+
+**Decisión.** El runner construye una incubadora nueva en cada cierre de
+generación, con las velas cortadas en el tick actual.
+
+**Consecuencias.** Un dry-run de seis meses vuelve a tener sentido como
+validación: lo que nace en la generación 30 nació con la información que había
+en la generación 30. Cuesta reconstruir la partición del walk-forward una vez
+por generación, que frente a los backtests de la propia criba es ruido.
+
+---
+
+### D-028 · 2026-09-21 · El benchmark recibe el mismo capital que el jardín
+
+**Contexto.** El jardín crece y encoge: cada nacimiento mete 1.000 USDT y cada
+muerte los saca. Compararlo con un buy & hold de capital fijo no dice nada —
+basta sembrar más bots para "ganarle".
+
+**Decisión.** La cartera espejo compra unidades del mercado de cada bot cuando
+nace, al precio de ese momento, y las devuelve cuando muere. El alfa compara
+entonces dos carteras con las mismas entradas y salidas de dinero.
+
+**Consecuencias.** El benchmark es multi-mercado sin esfuerzo: cada bot compra
+el suyo. Al reanudar tras una caída se reparte el valor escrito entre los
+mercados con la proporción actual, para que la curva no dé un salto.
+
+---
+
+### D-029 · 2026-09-21 · Multi-símbolo: el reloj lo marca el símbolo primario
+
+**Contexto.** El jardín se diseñó multi-símbolo desde el día 1 y el genoma ya
+llevaba su `MarketSpec`, pero el motor sólo sabía cargar una serie.
+
+**Decisión.** El runner mantiene una serie por mercado y un único reloj, el del
+símbolo primario. Cada serie trae una tabla de alineación que traduce el índice
+del reloj al suyo; un bot cuyo mercado no tiene vela en ese momento no opera y
+se queda valorado a su último cierre conocido. La criba la reparte
+`MultiSymbolIncubator`, que manda cada candidato a la incubadora de su mercado
+y compara clones sólo contra los vivos de ese mercado: dos genomas idénticos
+sobre mercados distintos no son clones, son la misma idea puesta a prueba en
+dos sitios.
+
+**Consecuencias.** `keepgarden garden seed --symbols BTC/USDT,ETH/USDT,SOL/USDT`
+reparte la población entre mercados y el jardín corre los tres a la vez. Un
+mercado que abre más tarde que el primario (SOL no existía en 2020) sencillamente
+no tiene ticks hasta que aparece. Lo que el reloj primario no ve, no ocurre:
+si BTC tiene un hueco, esa hora no existe para nadie. Es una simplificación
+consciente y el precio de tener un solo reloj.
+
+---
+
+### D-030 · 2026-09-21 · Cuestión abierta: 168 velas no dan 10 operaciones
+
+**Contexto.** Dos decisiones cerradas chocan en cuanto el jardín vive de
+verdad. `garden.ticks_per_generation: 168` (una semana) y
+`fitness.min_trades: 10`. Medido sobre el dry-run de seis meses: la mediana de
+operaciones por bot y ventana es **2,3**, y sólo 5 de 532 pares (bot,
+generación) llegan a diez. El fitness vivo queda indefinido casi siempre, la
+selección se queda con la nota de la incubadora y el jardín deja de evolucionar
+por rendimiento real: 26 generaciones con 0 o 1 nacimientos.
+
+**Decisión.** Ninguna todavía: son dos parámetros que Alex fijó y el motor no
+los cambia por su cuenta. Queda escrito aquí y señalado en el informe del
+jardinero, que ya avisa de cuántos bots se quedan sin fitness definido.
+
+**Opciones, por orden de intrusión:**
+
+1. Bajar `fitness.min_trades` a 3 o 4. Un cambio de una línea; el riesgo es
+   juzgar con poca evidencia, que es justo lo que ese parámetro evita.
+2. Subir `ticks_per_generation` a 500-700 (un mes). Generaciones más lentas
+   pero con evidencia de verdad. Cambia el ritmo de todo el jardín.
+3. Medir el fitness vivo sobre una **ventana deslizante de varias
+   generaciones** en vez de sólo la última. Es la más correcta y la que más
+   código toca.
+
+La 3 es la que recomienda quien esto escribe; la 2 es la más barata de probar.

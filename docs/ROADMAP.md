@@ -115,7 +115,7 @@ El motor genético completo, corriendo sobre histórico.
 
 ---
 
-## Hito 5 — El jardín vivo
+## Hito 5 — El jardín vivo  ✅
 
 El bucle continuo sobre datos reales.
 
@@ -125,11 +125,21 @@ El bucle continuo sobre datos reales.
 - Comando `keepgarden run` con `--dry-run` que simula el reloj acelerado.
 
 **Aceptación**
-- `keepgarden run --dry-run --speed 1000` recorre 6 meses de histórico como si
-  fuera vivo y produce un jardín con al menos 25 generaciones.
+- `keepgarden run --dry-run` recorre 6 meses de histórico como si fuera vivo y
+  produce un jardín con al menos 25 generaciones.  ✅ 4.380 velas en 36 s, de la
+  generación 25 a la 51: **26 generaciones**, 1.248 operaciones.
 - Matar el proceso a mitad y relanzarlo: continúa exactamente donde estaba, sin
-  duplicar ni una operación.
-- 48 horas de ejecución real contra Binance sin intervención.
+  duplicar ni una operación.  ✅ un test parte la ejecución en dos mitades y
+  compara operación a operación y punto a punto de la curva contra la tirada
+  entera.
+- 48 horas de ejecución real contra Binance sin intervención.  ⏳ **pendiente**:
+  necesita red y 48 horas de reloj. El código del modo vivo está probado con un
+  venue simulado (catch-up, backoff, degradación), pero nadie lo ha corrido
+  todavía contra Binance de verdad.
+
+Añadido sobre lo previsto: el dry-run produce **exactamente las mismas
+operaciones** que un backtest del mismo genoma sobre el mismo tramo, y hay un
+test que lo comprueba bot a bot. Es lo que hace que el dry-run valide algo.
 
 ---
 
@@ -161,7 +171,7 @@ enseñar un gráfico en blanco.
 
 ---
 
-## Hito 7 — El jardinero
+## Hito 7 — El jardinero  ✅
 
 Cerrar el bucle con Claude dentro.
 
@@ -173,26 +183,46 @@ Cerrar el bucle con Claude dentro.
 
 **Aceptación**
 - El informe de una generación real es legible y suficiente para decidir sin
-  mirar la base de datos.
+  mirar la base de datos.  ✅ nueve secciones, con los genomas de los diez
+  mejores en prosa y no en JSON.
 - Una propuesta que viola un límite se rechaza con un mensaje que explica cuál.
+  ✅ y las demás de la sesión siguen su curso; sólo los límites acumulativos
+  (jubilar a más del 20 %, demasiadas fusiones) tumban la sesión entera.
 - Una sesión completa de jardinero queda registrada y su efecto se mide
-  automáticamente `review_in_generations` después.
+  automáticamente `review_in_generations` después.  ✅ `keepgarden report` revisa
+  lo que toca antes de escribir el informe, y el punto 9 enseña el veredicto.
+
+Probado sobre el jardín de seis meses: cuatro propuestas aplicadas, una
+rechazada por tocar un freno del sistema, y ninguno de los cuatro bots sembrados
+por el jardinero llegó a nacer — no pasaron la incubadora. Es exactamente lo que
+tenía que pasar: un injerto del jardinero no tiene privilegios.
 
 ---
 
-## Hito 8 — Endurecimiento
+## Hito 8 — Endurecimiento  ✅ (salvo los 30 días de reloj)
 
-- Multi-símbolo real (`ETH/USDT`, `SOL/USDT`).
-- Persistencia de snapshots del jardín (copias de `garden.db` fechadas).
+- Multi-símbolo real (`ETH/USDT`, `SOL/USDT`).  ✅ `garden seed --symbols`
+  reparte la población y el runner corre las tres series a la vez, con un solo
+  reloj (docs/DECISIONS.md D-029).
+- Persistencia de snapshots del jardín (copias de `garden.db` fechadas).  ✅ cada
+  `storage.snapshot_every_generations` generaciones, automáticamente.
 - Informe de robustez: sensibilidad del fitness a comisiones, slippage y
-  desplazamiento temporal del inicio.
-- Prueba de Monte Carlo sobre el orden de las operaciones.
-- Panel de salud del sistema: latencia del venue, huecos, tiempos de tick.
+  desplazamiento temporal del inicio.  ✅ `keepgarden robustness`.
+- Prueba de Monte Carlo sobre el orden de las operaciones.  ✅ sobre el PnL, que
+  es como se mueve la cartera de verdad; más un bootstrap, porque barajar el
+  orden no cambia el dinero final y sí el camino.
+- Panel de salud del sistema: latencia del venue, huecos, tiempos de tick.  ✅
+  vista *Salud* del dashboard y `GET /api/health`.
 
 **Aceptación**
-- El jardín corre 30 días seguidos sin intervención.
+- El jardín corre 30 días seguidos sin intervención.  ⏳ **pendiente**: no se
+  puede comprobar sin 30 días. Lo que sí está medido es el coste por vela
+  —≈1 ms con 36 bots sobre tres mercados, contra los 3.600.000 ms que hay entre
+  velas— y que la reanudación es exacta.
 - El informe de robustez muestra que el mejor linaje sobrevive a duplicar la
-  fricción.
+  fricción.  ✅ de los tres mejores del jardín de prueba, uno aguanta el doble de
+  fricción (+14 % de retorno) y no aguanta el triple. Los otros dos no llegan al
+  doble: viven de un margen menor que su propio coste de transacción.
 
 ---
 
