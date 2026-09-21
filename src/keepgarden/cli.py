@@ -330,9 +330,147 @@ def cmd_garden_status(args: argparse.Namespace) -> int:
     raise PendingMilestone("hito 4 (Incubadora y evolución)", "garden status")
 
 
+def _save_equity(result: object, cfg: Config, genome_id: str) -> str:
+    """Guarda la curva de capital: PNG si hay matplotlib, CSV si no.
+
+    ``matplotlib`` no está en el stack del proyecto y no se añade por un
+    gráfico de la CLI: las curvas de verdad se ven en el dashboard. Si el
+    entorno lo tiene, se aprovecha; si no, el CSV sirve igual para mirarlo con
+    cualquier cosa.
+    """
+    import numpy as np
+
+    destino = cfg.path(cfg.gardener.report_dir)
+    destino.mkdir(parents=True, exist_ok=True)
+    equity = result.equity_curve  # type: ignore[attr-defined]
+    momentos = result.equity_ts  # type: ignore[attr-defined]
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        ruta = destino / f"equity_{genome_id}.csv"
+        np.savetxt(
+            ruta, np.column_stack([momentos, equity]),
+            delimiter=",", header="ts,equity", comments="", fmt=["%d", "%.8f"],
+        )
+        return f"{ruta} (sin matplotlib: se guarda la serie, no el gráfico)"
+
+    fechas = np.asarray(momentos, dtype="datetime64[ms]")
+    figura, eje = plt.subplots(figsize=(11, 4))
+    eje.plot(fechas, equity, linewidth=1.0)
+    eje.set_title(f"curva de capital · {genome_id}")
+    eje.grid(alpha=0.3)
+    figura.tight_layout()
+    ruta = destino / f"equity_{genome_id}.png"
+    figura.savefig(ruta, dpi=120)
+    plt.close(figura)
+    return str(ruta)
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     """Corre un genoma sobre un rango de velas e imprime sus métricas."""
-    raise PendingMilestone("hito 3 (Motor de simulación)", "backtest")
+    from .config import load_config
+    from .data.backfill import format_ts, miles, parse_since
+    from .data.indicators import IndicatorCache
+    from .engine.backtest import run_backtest
+    from .evaluation.metrics import compute_metrics
+    from .genome.serialize import load_genome
+    from .genome.validate import validate_genome
+
+    cfg = load_config(args.config)
+    catalog = _load_catalog(cfg)
+    genome = load_genome(args.genome)
+
+    informe = validate_genome(genome, cfg, catalog, strict=False)
+    if not informe.ok:
+        print(f"{genome.id} no es un genoma válido:", file=sys.stderr)
+        for error in informe.errors:
+            print(f"  · {error}", file=sys.stderr)
+        return EXIT_ERROR
+
+    velas, contexto = _candles_for(cfg, genome.market)
+    if velas.empty:
+        print(
+            f"no hay velas de {genome.market.key()} en caché.\n"
+            f"  keepgarden data backfill --symbol {genome.market.symbol}",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    desde = parse_since(args.from_date) if args.from_date else None
+    hasta = parse_since(args.to_date) if args.to_date else None
+    if desde is not None:
+        velas = velas.loc[velas.index >= desde]
+    if hasta is not None:
+        velas = velas.loc[velas.index <= hasta]
+    if velas.empty:
+        print("el rango pedido no contiene ninguna vela", file=sys.stderr)
+        return EXIT_ERROR
+
+    cache = IndicatorCache(
+        candles=velas, context=contexto, catalog=catalog, timeframe=genome.market.timeframe
+    )
+    resultado = run_backtest(genome, velas, cfg, features=cache)
+    assert resultado.equity_curve is not None
+    m = compute_metrics(
+        resultado.equity_curve,
+        resultado.trades,
+        genome.market.timeframe,
+        total_fees=resultado.total_fees,
+        benchmark=velas["close"].to_numpy(),
+    )
+
+    capital = float(resultado.equity_curve[0])
+    print(genome.describe())
+    print(
+        f"\nventana    {format_ts(resultado.start_ts)} → {format_ts(resultado.end_ts)} "
+        f"· {miles(resultado.n_bars)} velas (calentamiento {miles(resultado.warmup_bars)})"
+    )
+    if resultado.aborted_reason:
+        print(f"ABORTADO   {resultado.aborted_reason}")
+
+    print(f"\ncapital    {capital:,.2f} → {resultado.final_equity:,.2f} "
+          f"({m.total_return:+.2%})")
+    print(f"comisiones {resultado.total_fees:,.2f}"
+          f"  ·  buy & hold {velas['close'].iloc[-1] / velas['close'].iloc[0] - 1:+.2%}")
+
+    filas = [
+        ("retorno", [("total", f"{m.total_return:+.2%}"), ("CAGR", f"{m.cagr:+.2%}"),
+                     ("por operación", f"{m.avg_trade_return:+.3%}"),
+                     ("expectancy", f"{m.expectancy:+.3%}")]),
+        ("riesgo", [("max drawdown", f"{m.max_drawdown:.2%}"),
+                    ("ulcer", f"{m.ulcer_index:.4f}"),
+                    ("peor operación", f"{m.worst_trade:+.2%}"),
+                    ("en mercado", f"{m.time_in_market:.1%}")]),
+        ("ajustadas", [("sortino", f"{m.sortino:.2f}"), ("sharpe", f"{m.sharpe:.2f}"),
+                       ("calmar", f"{m.calmar:.2f}"), ("martin", f"{m.martin:.2f}"),
+                       ("profit factor", f"{m.profit_factor:.2f}")]),
+        ("comportamiento", [("operaciones", miles(m.n_trades)),
+                            ("aciertos", f"{m.win_rate:.1%}"),
+                            ("velas por op.", f"{m.avg_holding_bars:.0f}"),
+                            ("turnover", f"{m.turnover:.1f}x"),
+                            ("fee drag", f"{m.fee_drag:.2f}"),
+                            ("consistencia", f"{m.consistency:.1%}")]),
+        ("relación", [("corr. buy & hold", f"{m.corr_to_benchmark:+.2f}")]),
+    ]
+    for titulo, pares in filas:
+        print(f"\n{titulo}")
+        for nombre, valor in pares:
+            print(f"  {nombre:<18} {valor:>12}")
+
+    if m.n_trades < cfg.fitness.min_trades:
+        print(
+            f"\naviso: {m.n_trades} operaciones, por debajo de fitness.min_trades "
+            f"({cfg.fitness.min_trades}). Sin evidencia suficiente, el fitness de "
+            f"este bot quedaría indefinido."
+        )
+
+    if args.plot:
+        print(f"\ncurva de capital: {_save_equity(resultado, cfg, genome.id)}")
+    return EXIT_OK
 
 
 def cmd_incubate(args: argparse.Namespace) -> int:

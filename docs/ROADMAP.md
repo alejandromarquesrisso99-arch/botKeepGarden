@@ -64,7 +64,7 @@ velas en caché y dice cuántas señales da y con qué frecuencia.
 
 ---
 
-## Hito 3 — Motor de simulación
+## Hito 3 — Motor de simulación  ✅
 
 Que un genoma se convierta en una curva de capital creíble.
 
@@ -77,11 +77,15 @@ Que un genoma se convierta en una curva de capital creíble.
 
 **Aceptación**
 - Test de no-look-ahead: un backtest sobre `velas[0:n]` da exactamente los mismos
-  trades que el mismo backtest sobre `velas[0:n+500]` truncado a `n`.
+  trades que el mismo backtest sobre `velas[0:n+500]` truncado a `n`.  ✅
 - Test de fricción: con comisión 0 y slippage 0, una estrategia buy & hold
-  reproduce el retorno del activo con error < 1e-9.
-- Test de contabilidad: `equity_final == capital_inicial + suma(pnl_neto)`.
-- `keepgarden backtest --genome examples/genome_trend.json` imprime métricas.
+  reproduce el retorno del activo con error < 1e-9.  ✅
+- Test de contabilidad: `equity_final == capital_inicial + suma(pnl_neto)`.  ✅
+- `keepgarden backtest --genome examples/genome_trend.json` imprime métricas.  ✅
+
+Sobre los siete años de BTC/USDT en caché, ese genoma de ejemplo hace 249
+operaciones, gana un 13.8 % frente al +2077 % del buy & hold, y paga en
+comisiones el 71 % de su beneficio bruto. El motor funciona; el bot no.
 
 ---
 

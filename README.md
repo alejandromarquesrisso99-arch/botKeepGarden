@@ -50,6 +50,8 @@ Hitos cerrados:
   `BTC/USDT` en 1h, 4h y 1d desde 2019, reanudable y sin look-ahead.
 - **Hito 2 — Genoma vivo.** 26 indicadores causales y cacheados, compilación de
   un genoma a señales y siembra sesgada por familia de ideas.
+- **Hito 3 — Motor de simulación.** Broker con fricción y convención pesimista,
+  cartera con sizing y stops, backtest sin look-ahead y todas las métricas.
 
 **Esto opera con dinero simulado.** El modo `live` está bloqueado por código a
 propósito.
@@ -66,6 +68,8 @@ keepgarden data status           # rango, huecos y anomalías de la caché
 
 keepgarden genome sample --family BREAKOUT --count 3
 keepgarden genome show --genome examples/genome_trend.json
+
+keepgarden backtest --genome examples/genome_trend.json --from 2023-01-01
 ```
 
 ## Documentación

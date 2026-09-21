@@ -81,5 +81,5 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
 [[tool.mypy.overrides]]
-module = ["ccxt.*", "pyarrow.*", "pandas.*", "yaml.*"]
+module = ["ccxt.*", "pyarrow.*", "pandas.*", "yaml.*", "matplotlib.*"]
 ignore_missing_imports = true

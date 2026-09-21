@@ -93,10 +93,12 @@ pero cambiar su forma rompe el resto: si necesitas hacerlo, anótalo en
 ✅ gardener/proposals.py
 ✅ storage/schema.sql
 ✅ cli.py (enrutado completo; `data backfill`, `data status`, `genome sample`,
-   `genome show`, `config` y `catalog` hacen trabajo de verdad)
+   `genome show`, `backtest`, `config` y `catalog` hacen trabajo de verdad)
 ✅ data/candles.py, data/store.py, data/sources.py, data/backfill.py  ← hito 1
 ✅ data/indicators.py, genome/compile.py, genome/validate.py,
    genome/random_genome.py  ← hito 2
+✅ engine/broker.py, engine/portfolio.py, engine/backtest.py,
+   evaluation/metrics.py  ← hito 3
 🔨 todo lo demás
 ```
 

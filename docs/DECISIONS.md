@@ -241,3 +241,57 @@ sesgo. La evolución empieza a explorar desde ideas con forma en vez de gastar
 generaciones descartando reglas que nunca se cumplen. Coste: el sembrador no
 explora combinaciones "al revés" que podrían funcionar; la mutación del hito 4
 sí puede llegar a ellas.
+
+---
+
+### D-016 · 2026-09-21 · `FIXED_FRACTION` invierte `max_exposure`, no `risk_per_trade`
+
+**Contexto.** El contrato de `portfolio.py` decía que `FIXED_FRACTION` compra
+`equity * risk_per_trade / precio`. Con `risk_per_trade` entre 0.002 y 0.02, eso
+son posiciones de entre el 0.2 % y el 2 % del capital: `max_exposure` no llegaría
+a actuar nunca y el criterio de aceptación del hito 3 —un buy & hold reproduce el
+retorno del activo— sería inalcanzable.
+
+**Decisión.** `FIXED_FRACTION` invierte `max_exposure` del capital, que es la
+"fracción fija" que el gen anuncia. `risk_per_trade` conserva su significado de
+**riesgo**, que es el que usan `ATR_RISK` (pérdida al saltar el stop) y
+`VOL_TARGET` (volatilidad diaria objetivo).
+
+**Consecuencias.** Los tres modos de sizing significan cosas distintas y
+coherentes, y ninguno mezcla "fracción invertida" con "fracción arriesgada", que
+era lo que hacía incoherente la línea original. Un bot de fracción fija con
+`max_exposure = 0.95` despliega casi todo su capital, así que la evolución tiene
+que elegir de verdad entre exposición y riesgo en vez de que la decisión venga
+dada por un descuido de la fórmula.
+
+---
+
+### D-017 · 2026-09-21 · El take profit no cobra el hueco a favor
+
+**Contexto.** Si una vela abre en 115 con el take profit en 110, una orden
+limitada real habría ejecutado en 115. Cobrarlo así es lo realista.
+
+**Decisión.** Se cobra en 110. El hueco a favor no se cobra; el hueco en contra
+del stop sí (ahí el fill es la apertura, no el precio del stop).
+
+**Consecuencias.** La asimetría es deliberada: en las dos direcciones se elige
+el peor caso. Un backtest optimista es peor que ninguno, porque da confianza
+donde no la hay, y con velas de 1h no hay forma de reconstruir lo que pasó
+dentro de la vela. Coste: el motor subestima ligeramente a los bots con take
+profit, y eso hay que tenerlo presente al comparar familias.
+
+---
+
+### D-018 · 2026-09-21 · El trailing se mide con el ATR de entrada
+
+**Contexto.** Un trailing `ATR_MULT` necesita un ATR para saber cuánto separarse
+del extremo favorable. Podía ser el ATR vivo de cada vela o el del momento de
+abrir.
+
+**Decisión.** El de entrada, guardado en la posición.
+
+**Consecuencias.** Con el ATR vivo, un repunte de volatilidad *alejaría* el stop
+del precio, que es exactamente lo contrario de lo que un trailing debe hacer:
+soltaría la posición justo cuando más protección hace falta. Con el ATR de
+entrada, el stop sólo se mueve a favor y el 1R de la operación significa lo
+mismo de principio a fin.

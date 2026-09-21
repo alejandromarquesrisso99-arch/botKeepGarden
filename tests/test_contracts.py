@@ -19,12 +19,8 @@ import pytest
 CONTRACT_MODULES = [
     "keepgarden.genome.distance",
     "keepgarden.engine.clock",
-    "keepgarden.engine.broker",
-    "keepgarden.engine.portfolio",
-    "keepgarden.engine.backtest",
     "keepgarden.engine.incubator",
     "keepgarden.engine.runner",
-    "keepgarden.evaluation.metrics",
     "keepgarden.evaluation.fitness",
     "keepgarden.evaluation.walkforward",
     "keepgarden.evolution.mutation",
@@ -60,6 +56,10 @@ IMPLEMENTED_MODULES = [
     "keepgarden.genome.compile",
     "keepgarden.genome.validate",
     "keepgarden.genome.random_genome",
+    "keepgarden.engine.broker",
+    "keepgarden.engine.portfolio",
+    "keepgarden.engine.backtest",
+    "keepgarden.evaluation.metrics",
 ]
 
 

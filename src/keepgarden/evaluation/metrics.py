@@ -16,12 +16,17 @@ Dos criterios gobiernan las decisiones de aquí:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from typing import Any, TypeAlias
 
 import numpy as np
 
 from ..types import PERIODS_PER_YEAR, Timeframe
+
+#: Una operación cerrada, tal y como la produce el backtest. Es JSON
+#: heterogéneo: tiparlo más fino sólo añadiría ceremonia.
+Trade: TypeAlias = Mapping[str, Any]
 
 #: Tope de los cocientes cuyo denominador puede ser cero (Calmar, Martin,
 #: Sortino sin pérdidas, profit factor sin operaciones perdedoras, fee drag sin
@@ -120,7 +125,7 @@ def drawdown_series(equity: np.ndarray) -> np.ndarray:
 
 def bars_per_day(timeframe: Timeframe) -> int:
     """Velas que caben en un día en este timeframe."""
-    return max(1, int(round(PERIODS_PER_YEAR[str(timeframe)] / 365.0)))
+    return max(1, round(PERIODS_PER_YEAR[str(timeframe)] / 365.0))
 
 
 def _consistency(equity: np.ndarray, timeframe: Timeframe) -> float:
@@ -187,7 +192,7 @@ def population_correlations(equities: dict[str, np.ndarray]) -> dict[str, float]
 # --------------------------------------------------------------------------- #
 
 
-def _trade_metrics(trades: Sequence[dict[str, object]], m: Metrics, n_bars: int) -> float:
+def _trade_metrics(trades: Sequence[Trade], m: Metrics, n_bars: int) -> float:
     """Rellena las métricas que salen de las operaciones. Devuelve el bruto."""
     m.n_trades = len(trades)
     if not trades:
@@ -220,7 +225,7 @@ def _trade_metrics(trades: Sequence[dict[str, object]], m: Metrics, n_bars: int)
 
 def compute_metrics(
     equity: np.ndarray,
-    trades: Sequence[dict[str, object]],
+    trades: Sequence[Trade],
     timeframe: Timeframe,
     *,
     total_fees: float = 0.0,
@@ -300,6 +305,7 @@ __all__ = (
     "MAX_LOG_CAGR",
     "MAX_RATIO",
     "Metrics",
+    "Trade",
     "bars_per_day",
     "compute_metrics",
     "drawdown_series",
