@@ -60,7 +60,7 @@ class BacktestResult:
     unrealized_pnl: float = 0.0
 
 
-def _series(
+def auxiliary_series(
     features: object, kind: str, params: dict[str, float], source: PriceField, n: int
 ) -> np.ndarray:
     """Una serie auxiliar del motor (ATR, volatilidad), con ceros si falla."""
@@ -129,12 +129,12 @@ def run_backtest(
     close = data["close"].to_numpy(dtype="float64")
     volume = data["volume"].to_numpy(dtype="float64")
 
-    atr = _series(features, "ATR", DEFAULT_ATR_PARAMS, PriceField.HLC3, n)
+    atr = auxiliary_series(features, "ATR", DEFAULT_ATR_PARAMS, PriceField.HLC3, n)
     stop_atr = atr
     if risk.stop.atr_ref and risk.stop.atr_ref in compiled.feature_arrays:
         stop_atr = np.nan_to_num(compiled.feature_arrays[risk.stop.atr_ref], nan=0.0)
     realized_vol = (
-        _series(features, "REALIZED_VOL", DEFAULT_VOL_PARAMS, PriceField.CLOSE, n)
+        auxiliary_series(features, "REALIZED_VOL", DEFAULT_VOL_PARAMS, PriceField.CLOSE, n)
         if risk.sizing is SizingKind.VOL_TARGET
         else np.zeros(n, dtype="float64")
     )
@@ -194,8 +194,8 @@ def run_backtest(
             cerrar_todo(t, close[t])
 
         if t >= warmup and t + 1 < n and not hueco_delante[t]:
-            _decidir(broker, port, genome, compiled.codes[t], t, ts, close, stop_atr,
-                     realized_vol, cfg)
+            decide_order(broker, port, genome, compiled.codes[t], t, ts, close,
+                         stop_atr, realized_vol, cfg)
 
         port.mark_to_market(close[t], int(ts[t]))
         equity[t] = port.equity(close[t])
@@ -210,7 +210,7 @@ def run_backtest(
     return result
 
 
-def _decidir(
+def decide_order(
     broker: PaperBroker,
     port: Portfolio,
     genome: Genome,
@@ -222,7 +222,12 @@ def _decidir(
     realized_vol: np.ndarray,
     cfg: Config,
 ) -> None:
-    """Traduce la señal de la vela ``t`` en una orden para la apertura de ``t+1``."""
+    """Traduce la señal de la vela ``t`` en una orden para la apertura de ``t+1``.
+
+    La usan el backtest y el jardín vivo, y por eso es pública: si cada uno
+    tuviera la suya, divergirían en la primera corrección y una sorpresa en
+    vivo dejaría de significar nada.
+    """
     risk = genome.risk
     momento = int(ts[t])
     largo = next((p for p in port.positions if p.side is Side.LONG), None)
@@ -293,6 +298,8 @@ __all__ = (
     "DEFAULT_ATR_PARAMS",
     "DEFAULT_VOL_PARAMS",
     "BacktestResult",
+    "auxiliary_series",
+    "decide_order",
     "run_backtest",
     "run_batch",
 )
