@@ -559,9 +559,9 @@ generación) llegan a diez. El fitness vivo queda indefinido casi siempre, la
 selección se queda con la nota de la incubadora y el jardín deja de evolucionar
 por rendimiento real: 26 generaciones con 0 o 1 nacimientos.
 
-**Decisión.** Ninguna todavía: son dos parámetros que Alex fijó y el motor no
-los cambia por su cuenta. Queda escrito aquí y señalado en el informe del
-jardinero, que ya avisa de cuántos bots se quedan sin fitness definido.
+**Decisión.** Resuelta en **D-031**: se mide el fitness vivo sobre una ventana
+deslizante de varias generaciones, sin tocar ninguno de los dos parámetros.
+Lo que sigue era el menú de opciones que se le planteó a Alex.
 
 **Opciones, por orden de intrusión:**
 
@@ -574,3 +574,65 @@ jardinero, que ya avisa de cuántos bots se quedan sin fitness definido.
    código toca.
 
 La 3 es la que recomienda quien esto escribe; la 2 es la más barata de probar.
+Alex eligió la 3.
+
+
+---
+
+### D-031 · 2026-09-21 · El fitness vivo se mide sobre una ventana deslizante
+
+**Contexto.** Resuelve D-030. Con 168 velas por generación la mediana de
+operaciones por bot es 2,3 y el fitness exige 10, así que casi nadie llegaba a
+tener fitness vivo definido. Ni `ticks_per_generation` ni `min_trades` son
+negociables: son decisiones cerradas y las dos tienen su razón.
+
+**Decisión.** La ventana de medición del jardín vivo empieza en la generación
+que se acaba de cerrar y **crece hacia atrás sólo hasta reunir `min_trades`
+operaciones**, con el tope de `fitness.live_window_generations` (4 por
+defecto). Un bot que opera mucho se sigue juzgando por su última semana; uno
+selectivo, por el último mes. La curva de capital se concatena tal cual —es la
+misma cartera— y las comisiones se cuentan desde el principio de la ventana
+elegida.
+
+El contador de inactividad **no** usa la ventana: mira sólo la generación que
+se cierra. Si mirara la ventana entera, un bot parado desde hace tres semanas
+seguiría contando como activo y no moriría nunca por inactivo. Por eso
+`evolve_generation` recibe `activity` aparte de `window_metrics`.
+
+**Consecuencias.** Medido sobre los mismos seis meses de dry-run, con la misma
+semilla:
+
+| | Antes (1 generación) | Ahora (hasta 4) |
+|---|---|---|
+| Pares (bot, generación) con fitness definido | 5 de 532 (0,9 %) | 235 de 500 (**47 %**) |
+| Generaciones con mediana de fitness | 4 de 26 | **26 de 26** |
+| Bots vivos con fitness vivo | 0 de 21 | **10 de 18** |
+| Nacimientos / muertes | 28 / 44 | 37 / 54 |
+
+El jardín pasa de no poder comparar a sus bots a seleccionarlos de verdad. El
+coste es que la nota de un bot puede arrastrar hasta un mes de historia, que es
+exactamente el punto: una semana no es evidencia.
+
+---
+
+### D-032 · 2026-09-21 · Los pesos de familia del jardinero llegan al motor
+
+**Contexto.** `REBALANCE_QUOTAS` aceptaba `family_weights`, los validaba y los
+guardaba en `garden_meta`… y no los leía nadie. Media función: el jardinero
+proponía algo que no tenía ningún efecto.
+
+**Decisión.** `Population` los lee una vez por generación y sesga con ellos la
+elección de familia al sembrar. Sin pesos —lo normal— el muestreo sigue siendo
+uniforme y con **exactamente la misma llamada** al `Random` sembrado que antes,
+para que un jardín sin `REBALANCE_QUOTAS` salga idéntico byte a byte.
+
+De paso se corrige una inversión de dependencias que se había colado: el motor
+importaba `effective_config` de `gardener/`, que está por encima suyo en la
+pirámide de docs/ARCHITECTURE.md §6. Esa función y las dos claves de
+`garden_meta` viven ahora en `config.py`, que no depende de nadie.
+
+**Consecuencias.** Queda una inversión conocida y asumida: `engine/runner.py`
+importa `evolution/population.py` para cerrar generación. Es inherente al
+contrato del hito 5 —el andamiaje puso el bucle en `engine/` y cerrar una
+generación *es* evolución— y no se arregla moviendo el archivo, sino decidiendo
+que el orquestador puede mirar hacia arriba. El resto de `engine/` sigue limpio.

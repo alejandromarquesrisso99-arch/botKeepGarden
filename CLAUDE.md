@@ -113,8 +113,12 @@ pero cambiar su forma rompe el resto: si necesitas hacerlo, anótalo en
 
 No queda ningún contrato con `NotImplementedError`. Lo único pendiente del
 roadmap es lo que necesita tiempo de reloj y red: 48 horas contra Binance y 30
-días seguidos de jardín. Y hay una cuestión de diseño abierta que sí importa:
-docs/DECISIONS.md **D-030**.
+días seguidos de jardín.
+
+El fitness vivo se mide sobre una ventana deslizante de varias generaciones
+(D-030 y **D-031**): es lo que hace que el jardín pueda comparar a sus bots con
+generaciones de una semana. Si tocas `_window_metrics` en `engine/runner.py`,
+lee esas dos entradas antes.
 ```
 
 ## Orden de trabajo

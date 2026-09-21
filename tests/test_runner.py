@@ -430,6 +430,172 @@ def test_un_bot_sin_vela_en_su_mercado_no_opera_ni_se_revalora(
         db.close()
 
 
+# --------------------------------------------------------------------------- #
+# La ventana deslizante del fitness vivo (D-030 / D-031)                       #
+# --------------------------------------------------------------------------- #
+
+
+def _incubadora_pequeña(config: Config) -> Config:
+    """Recorta el walk-forward para que quepa en unos cientos de velas.
+
+    Con la partición real hacen falta 21.390 velas y ninguna generación
+    llegaría a criar en un test.
+    """
+    return replace(
+        config,
+        incubator=replace(
+            config.incubator,
+            n_folds=2, train_bars=200, validation_bars=60,
+            embargo_bars=10, holdout_bars=80, min_trades_per_fold=1,
+        ),
+    )
+
+
+def _ultima_generacion_viva(repos) -> int:
+    return repos.db.query_one(
+        "SELECT MAX(generation) AS g FROM bot_metrics WHERE scope = 'live'"
+    )["g"]
+
+
+def _ventana_de(repos, generacion: int) -> tuple[int, int]:
+    """Los dos extremos temporales de una generación ya cerrada."""
+    fila = repos.generations.get(generacion)
+    anterior = repos.generations.get(generacion - 1)
+    desde = int(anterior["ended_ts"]) if anterior and anterior["ended_ts"] else 0
+    return desde, int(fila["ended_ts"])
+
+
+def _correr_con_ventana(
+    carpeta: Path, cfg: Config, catalog, velas: pd.DataFrame, generaciones: int
+):
+    """Corre el mismo jardín con una ventana de N generaciones y devuelve las
+    métricas vivas de la última generación cerrada."""
+    config, db, repos, _ = _sembrar(carpeta, cfg, catalog, n_bots=6, velas=velas)
+    try:
+        config = _incubadora_pequeña(
+            replace(
+                config,
+                garden=replace(config.garden, ticks_per_generation=120),
+                fitness=replace(config.fitness, live_window_generations=generaciones),
+            )
+        )
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
+        ultima = _ultima_generacion_viva(repos)
+        return [
+            dict(f) for f in repos.db.query(
+                "SELECT bot_id, n_trades, fitness FROM bot_metrics "
+                "WHERE scope = 'live' AND generation = ?",
+                (ultima,),
+            )
+        ]
+    finally:
+        db.close()
+
+
+def test_la_ventana_deslizante_reune_la_evidencia_que_una_semana_no_da(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El fondo de D-030: midiendo sólo la última generación casi nadie llega
+    al mínimo de operaciones, y el jardín se queda sin fitness que comparar."""
+    velas = _velas()
+
+    una = _correr_con_ventana(tmp_path / "una", cfg, catalog, velas, generaciones=1)
+    cuatro = _correr_con_ventana(tmp_path / "cuatro", cfg, catalog, velas, generaciones=4)
+
+    assert una and cuatro
+    ops_una = sum(f["n_trades"] or 0 for f in una)
+    ops_cuatro = sum(f["n_trades"] or 0 for f in cuatro)
+    assert ops_cuatro > ops_una, "la ventana larga tiene que acumular más evidencia"
+
+    definidos_una = sum(1 for f in una if f["fitness"] is not None)
+    definidos_cuatro = sum(1 for f in cuatro if f["fitness"] is not None)
+    assert definidos_cuatro >= definidos_una
+
+
+def test_la_ventana_no_crece_mas_de_lo_necesario(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """Un bot que ya tiene evidencia se juzga por su última generación.
+
+    Con el mínimo en una operación, la ventana no debe tirar de ningún tramo
+    anterior: lo que se mide es exactamente lo que se cerró esta generación.
+    """
+    velas = _velas()
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=6, velas=velas)
+    try:
+        config = _incubadora_pequeña(
+            replace(
+                config,
+                garden=replace(config.garden, ticks_per_generation=120),
+                fitness=replace(config.fitness, min_trades=1, live_window_generations=4),
+            )
+        )
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
+
+        ultima = _ultima_generacion_viva(repos)
+        desde, hasta = _ventana_de(repos, ultima)
+        comprobados = 0
+        for fila in repos.db.query(
+            "SELECT bot_id, n_trades FROM bot_metrics WHERE scope = 'live' "
+            "AND generation = ? AND n_trades > 0",
+            (ultima,),
+        ):
+            cerradas = repos.db.query_one(
+                "SELECT COUNT(*) AS n FROM trades WHERE bot_id = ? "
+                "AND close_ts > ? AND close_ts <= ?",
+                (fila["bot_id"], desde, hasta),
+            )["n"]
+            assert int(fila["n_trades"]) == cerradas, (
+                f"{fila['bot_id']} arrastra tramos que ya no necesitaba"
+            )
+            comprobados += 1
+        assert comprobados, "alguien tiene que haber operado"
+    finally:
+        db.close()
+
+
+def test_el_contador_de_inactividad_mira_solo_la_ultima_generacion(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """Si mirara la ventana entera, un bot parado hace tres semanas seguiría
+    contando como activo y no moriría nunca por inactivo."""
+    velas = _velas()
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=6, velas=velas)
+    try:
+        config = _incubadora_pequeña(
+            replace(
+                config,
+                garden=replace(config.garden, ticks_per_generation=120),
+                fitness=replace(config.fitness, live_window_generations=4),
+            )
+        )
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
+
+        ultima = _ultima_generacion_viva(repos)
+        desde, hasta = _ventana_de(repos, ultima)
+        comprobados = 0
+        for fila in repos.bots.alive():
+            if int(fila["born_generation"]) >= ultima:
+                continue        # nació al cerrarla: no ha vivido la generación
+            # Lo que cuenta el runner son las operaciones CERRADAS dentro de la
+            # generación, que es lo que tiene en portfolio.closed_trades.
+            cerradas = repos.db.query_one(
+                "SELECT COUNT(*) AS n FROM trades WHERE bot_id = ? "
+                "AND close_ts > ? AND close_ts <= ?",
+                (fila["bot_id"], desde, hasta),
+            )["n"]
+            if cerradas == 0:
+                assert int(fila["idle_generations"]) >= 1, (
+                    f"{fila['bot_id']} no cerró nada en la {ultima} y sigue a cero"
+                )
+            else:
+                assert int(fila["idle_generations"]) == 0
+            comprobados += 1
+        assert comprobados, "sin bots vivos no se ha comprobado nada"
+    finally:
+        db.close()
+
+
 def test_el_jardin_guarda_copias_de_si_mismo(
     tmp_path: Path, cfg: Config, catalog
 ) -> None:

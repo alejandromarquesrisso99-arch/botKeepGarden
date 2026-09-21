@@ -12,9 +12,11 @@ Reglas de este módulo:
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping, TypeVar
+from typing import Any, TypeVar
 
 import yaml
 
@@ -168,6 +170,10 @@ class FitnessConfig:
     age_saturation_generations: int = 8
     live_weight: float = 0.70
     incubator_weight: float = 0.30
+    #: Cuántas generaciones vividas entran como máximo en la medición del
+    #: fitness vivo. La ventana crece hacia atrás sólo hasta reunir
+    #: ``min_trades`` operaciones: ver docs/DECISIONS.md D-031.
+    live_window_generations: int = 4
 
 
 @dataclass(slots=True)
@@ -369,6 +375,12 @@ def validate_config(cfg: Config) -> None:
     f = cfg.fitness
     if abs(f.live_weight + f.incubator_weight - 1.0) > 1e-6:
         raise ConfigError("fitness.live_weight + incubator_weight debe ser 1.0")
+    if not 1 <= f.live_window_generations <= 24:
+        raise ConfigError(
+            "fitness.live_window_generations debe estar entre 1 y 24. Con 1 se "
+            "mide sólo la última generación, que es lo que dejaba al jardín sin "
+            "fitness definido (docs/DECISIONS.md D-030)."
+        )
 
     i = cfg.incubator
     if i.holdout_bars <= 0:
@@ -418,6 +430,14 @@ def validate_config(cfg: Config) -> None:
 # reversible (docs/GARDENER_PROTOCOL.md §Límites). Estas dos funciones son el
 # puente entre el YAML y esos ajustes efectivos.
 # --------------------------------------------------------------------------- #
+
+
+#: Clave de ``garden_meta`` con los ajustes efectivos del jardinero.
+OVERRIDES_KEY = "gardener_overrides"
+
+#: Clave de ``garden_meta`` con los pesos de siembra por familia que el
+#: jardinero haya fijado con ``REBALANCE_QUOTAS``.
+FAMILY_WEIGHTS_KEY = "gardener_family_weights"
 
 
 def current_params(cfg: Config) -> dict[str, float]:
@@ -471,25 +491,66 @@ def apply_overrides(cfg: Config, overrides: Mapping[str, Any]) -> Config:
     return nuevo
 
 
+def effective_config(cfg: Config, db: Any) -> Config:
+    """La config con los ajustes del jardinero aplicados.
+
+    La usan el jardín vivo y la incubadora al arrancar: si el jardinero subió
+    la tasa de mutación, el motor tiene que correr con ella sin que nadie haya
+    tocado el YAML. ``db`` es cualquier cosa con ``get_meta``; vive aquí y no
+    en ``gardener/`` para que el motor no tenga que importar del jardinero,
+    que está por encima suyo en la pirámide de dependencias.
+    """
+    try:
+        ajustes = json.loads(db.get_meta(OVERRIDES_KEY) or "{}")
+    except (ValueError, TypeError, AttributeError):
+        return cfg
+    return apply_overrides(cfg, ajustes)
+
+
+def family_weights(db: Any) -> dict[str, float]:
+    """Pesos de siembra por familia que haya dejado el jardinero.
+
+    Vacío si no hay ninguno, que es lo normal: el muestreo por defecto es
+    uniforme entre las familias sembrables.
+    """
+    try:
+        crudo = json.loads(db.get_meta(FAMILY_WEIGHTS_KEY) or "{}")
+    except (ValueError, TypeError, AttributeError):
+        return {}
+    salida: dict[str, float] = {}
+    for clave, valor in dict(crudo).items():
+        try:
+            peso = float(valor)
+        except (TypeError, ValueError):
+            continue
+        if peso > 0:
+            salida[str(clave)] = peso
+    return salida
+
+
 __all__ = (
+    "FAMILY_WEIGHTS_KEY",
+    "OVERRIDES_KEY",
     "Config",
     "ConfigError",
+    "DashboardConfig",
+    "EvolutionConfig",
+    "ExecutionConfig",
+    "FitnessConfig",
+    "FrictionConfig",
+    "FusionConfig",
+    "GardenConfig",
+    "GardenerConfig",
+    "IncubatorConfig",
+    "MarketConfig",
+    "RiskConfig",
+    "SpeciationConfig",
+    "StorageConfig",
     "apply_overrides",
     "current_params",
+    "effective_config",
+    "family_weights",
+    "find_project_root",
     "load_config",
     "validate_config",
-    "find_project_root",
-    "MarketConfig",
-    "ExecutionConfig",
-    "FrictionConfig",
-    "GardenConfig",
-    "RiskConfig",
-    "EvolutionConfig",
-    "FusionConfig",
-    "SpeciationConfig",
-    "IncubatorConfig",
-    "FitnessConfig",
-    "GardenerConfig",
-    "StorageConfig",
-    "DashboardConfig",
 )

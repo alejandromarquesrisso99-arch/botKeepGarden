@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Mapping, Sequence
 
-from ..config import Config
+from ..config import Config, family_weights
 from ..evaluation.fitness import (
     FitnessBreakdown,
     RobustScale,
@@ -112,6 +112,9 @@ class Population:
     #: candidatos a fusión cuando todavía no hay jardín vivo que haya dejado
     #: curvas de equity en la base.
     _returns: dict[BotId, object] = field(default_factory=dict)
+    #: Pesos de siembra por familia que haya fijado el jardinero con
+    #: REBALANCE_QUOTAS. Vacío es lo normal: muestreo uniforme.
+    _seed_weights: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.repos is None:
@@ -138,6 +141,7 @@ class Population:
         *,
         window_metrics: Mapping[BotId, Metrics] | None = None,
         scope: str = "incubator",
+        activity: Mapping[BotId, int] | None = None,
     ) -> GenerationOutcome:
         """Los 10 pasos de docs/ARCHITECTURE.md §5, en orden:
 
@@ -164,12 +168,22 @@ class Population:
         en ``bot_metrics``: ``live`` para el jardín vivo, ``incubator`` para una
         cosecha. De él depende también cómo se combina el fitness: el vivo pesa
         0.70 y el backtest 0.30 (``fitness.live_weight``).
+
+        ``activity`` son las operaciones de **esta** generación, bot a bot. Va
+        aparte de las métricas porque el jardín vivo mide el fitness sobre una
+        ventana de varias generaciones (D-031) pero el contador de inactividad
+        tiene que mirar sólo la última: si no, un bot que dejó de operar hace
+        tres semanas seguiría contando como activo y no moriría nunca.
         """
         assert self.repos is not None
         genomas = self.alive_genomes()
         outcome = GenerationOutcome(generation=generation)
         if not genomas:
             return outcome
+
+        # Se leen una vez por generación: el jardinero puede haberlos cambiado
+        # entre una y otra, pero no a mitad de una cosecha.
+        self._seed_weights = family_weights(self.db)
 
         metricas = dict(window_metrics) if window_metrics else self._incubator_metrics(
             genomas, incubator
@@ -261,7 +275,7 @@ class Population:
 
             self._persist(
                 generation, genomas, metricas, fitness, especies, frente,
-                diversidad, cuotas_familia, outcome, scope,
+                diversidad, cuotas_familia, outcome, scope, activity,
             )
 
         definidos = [v for v in escalares.values() if v == v]
@@ -483,12 +497,31 @@ class Population:
         if not disponibles:
             disponibles = list(SEEDABLE_FAMILIES)
         for _ in range(BREED_ATTEMPTS):
-            familia = disponibles[self.rng.randrange(len(disponibles))]
+            familia = self._pick_family(disponibles)
             try:
                 return random_genome(familia, market, self.cfg, self.catalog, self.rng)
             except GenomeInvalid:
                 continue
         return None
+
+    def _pick_family(self, disponibles: Sequence[IdeaFamily]) -> IdeaFamily:
+        """Elige familia para una semilla, respetando los pesos del jardinero.
+
+        Sin pesos el muestreo es uniforme, y con exactamente la misma llamada
+        al ``Random`` sembrado que antes de que esto existiera: un jardín sin
+        REBALANCE_QUOTAS tiene que salir idéntico.
+        """
+        pesos = [float(self._seed_weights.get(str(f), 0.0)) for f in disponibles]
+        total = sum(pesos)
+        if total <= 0:
+            return disponibles[self.rng.randrange(len(disponibles))]
+        objetivo = self.rng.random() * total
+        acumulado = 0.0
+        for familia, peso in zip(disponibles, pesos):
+            acumulado += peso
+            if objetivo <= acumulado:
+                return familia
+        return disponibles[-1]
 
     def _correlations(
         self, genomas: Mapping[BotId, Genome]
@@ -652,6 +685,7 @@ class Population:
         cuotas_familia: Mapping[IdeaFamily, float],
         outcome: GenerationOutcome,
         scope: str = "incubator",
+        activity: Mapping[BotId, int] | None = None,
     ) -> None:
         assert self.repos is not None
         especie_de = {m: sp.species_id for sp in especies for m in sp.members}
@@ -674,11 +708,14 @@ class Population:
             fila["on_pareto_front"] = int(bot in frente)
             self.repos.metrics.upsert(bot, generation, scope, fila)
             self._update_fitness(bot, fitness[bot], edades.get(bot, 0), scope)
+            operaciones = (
+                activity.get(bot, 0) if activity is not None else met.n_trades
+            )
             self.repos.bots.set_generation_stats(
                 bot,
                 generations_alive=edades.get(bot, 0),
-                idle_generations=(0 if met.n_trades else self._idle(generation).get(bot, 0) + 1),
-                total_trades=met.n_trades,
+                idle_generations=(0 if operaciones else self._idle(generation).get(bot, 0) + 1),
+                total_trades=operaciones,
                 species_id=especie_de.get(bot),
                 is_elite=bot in elite,
                 on_pareto_front=bot in frente,

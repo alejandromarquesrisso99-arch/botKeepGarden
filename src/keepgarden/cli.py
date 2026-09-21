@@ -724,7 +724,7 @@ def cmd_incubate(args: argparse.Namespace) -> int:
 
     db, repos = _open_garden(cfg, create=False)
     try:
-        from .gardener.apply import effective_config
+        from .config import effective_config
 
         cfg = effective_config(cfg, db)
         incubadora = Incubator(

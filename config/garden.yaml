@@ -155,6 +155,11 @@ fitness:
   # El jardín vivo manda sobre el backtest.
   live_weight: 0.70
   incubator_weight: 0.30
+  # Cuántas generaciones vividas entran como mucho en la medición del fitness
+  # vivo. La ventana crece hacia atrás sólo hasta reunir min_trades
+  # operaciones: con 168 velas por generación un bot opera 2 o 3 veces, y
+  # midiendo sólo la última no llegaba nunca al mínimo. Ver DECISIONS D-031.
+  live_window_generations: 4
 
 # ---------------------------------------------------------------------------
 gardener:

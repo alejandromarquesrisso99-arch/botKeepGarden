@@ -141,6 +141,11 @@ Añadido sobre lo previsto: el dry-run produce **exactamente las mismas
 operaciones** que un backtest del mismo genoma sobre el mismo tramo, y hay un
 test que lo comprueba bot a bot. Es lo que hace que el dry-run valide algo.
 
+El fitness vivo se mide sobre una ventana deslizante de hasta cuatro
+generaciones (docs/DECISIONS.md D-031). Sin eso, con ventanas de una semana,
+sólo el 0,9 % de los bots llegaba a tener fitness definido y el jardín no podía
+seleccionar; ahora es el 47 %.
+
 ---
 
 ## Hito 6 — Dashboard  ✅

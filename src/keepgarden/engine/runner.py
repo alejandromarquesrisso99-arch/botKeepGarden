@@ -16,13 +16,14 @@ tick simplemente no actúa en ese tick; inventar precio es inventar rentabilidad
 from __future__ import annotations
 
 import time
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..config import Config
+from ..config import Config, effective_config
 from ..data.candles import timeframe_ms
 from ..evaluation.metrics import Metrics, compute_metrics
 from ..genome.schema import Genome
@@ -98,6 +99,21 @@ class _Series:
 
 
 @dataclass(slots=True)
+class _Tramo:
+    """Lo vivido por un bot en una generación: su trozo de curva, sus
+    operaciones y las comisiones que llevaba acumuladas al empezarla."""
+
+    start_index: int
+    equity: list[float]
+    trades: list[dict[str, Any]]
+    fees_at_start: float
+
+    @property
+    def n_trades(self) -> int:
+        return len(self.trades)
+
+
+@dataclass(slots=True)
 class _BotState:
     """Todo lo que un bot vivo necesita para operar un tick.
 
@@ -122,11 +138,18 @@ class _BotState:
     #: espejo recibe exactamente las mismas entradas y salidas de dinero que el
     #: jardín, y el alfa compara dos cosas comparables.
     benchmark_units: float = 0.0
-    #: Curva de la ventana que se está viviendo, para las métricas de generación.
+    #: Curva de la generación que se está viviendo.
     equity_window: list[float] = field(default_factory=list)
+    #: Las generaciones anteriores, para la ventana deslizante del fitness
+    #: vivo. Sin ellas, una semana de 168 velas casi nunca reúne las
+    #: ``fitness.min_trades`` operaciones que hacen falta para juzgar a un bot
+    #: (docs/DECISIONS.md D-030 y D-031).
+    history: deque[_Tramo] = field(default_factory=deque)
     #: Id de la fila de ``trades`` abierta por lado.
     open_trades: dict[str, int] = field(default_factory=dict)
     fees_at_window_start: float = 0.0
+    #: Índice del reloj en el que empezó la generación en curso para este bot.
+    window_start_index: int = 0
     #: Último cierre conocido de su mercado, para valorarlo cuando su símbolo
     #: no tiene vela en este tick.
     last_price: float = 0.0
@@ -193,7 +216,6 @@ class GardenRunner:
         import random
 
         from ..evolution.population import Population
-        from ..gardener.apply import effective_config
         from ..genome.catalog import load_catalog
         from ..storage.repositories import Repositories
 
@@ -332,6 +354,8 @@ class GardenRunner:
             cooldown_ms=max(0, int(genome.risk.cooldown_bars))
             * timeframe_ms(genome.market.timeframe),
             first_index=first_index,
+            window_start_index=first_index,
+            history=deque(maxlen=max(0, self.cfg.fitness.live_window_generations - 1)),
             last_price=float(serie.close[min(max(0, first_index), n - 1)]),
         )
         self._restore_positions(estado, serie)
@@ -814,8 +838,16 @@ class GardenRunner:
             # la generación que viene, con una semana más de datos.
             return self._close_without_breeding(generation, hasta, ahora_ts)
 
+        # La actividad va aparte de las métricas: el fitness se mide sobre la
+        # ventana deslizante, pero "¿ha operado esta generación?" tiene que
+        # seguir siendo de esta generación, o nadie moriría nunca por inactivo.
+        actividad = {
+            bot_id: len(estado.portfolio.closed_trades)
+            for bot_id, estado in self.bots.items()
+        }
         outcome = self.population.evolve_generation(
-            generation, incubadora, window_metrics=self._window_metrics(), scope="live"
+            generation, incubadora, window_metrics=self._window_metrics(),
+            scope="live", activity=actividad,
         )
 
         tick = Tick(ts=ahora_ts, generation=generation, index=max(0, hasta - 1))
@@ -863,11 +895,7 @@ class GardenRunner:
                 self.repos.events.log_many(self._pending_events)
                 self._pending_events.clear()
 
-        for estado in self.bots.values():
-            estado.equity_window.clear()
-            estado.fees_at_window_start = estado.portfolio.total_fees
-            estado.portfolio.closed_trades.clear()
-        self._window_start_index = hasta
+        self._roll_windows(hasta)
         self.generation = generation
         self._snapshot_if_due(generation)
         self._say(outcome.summary_line)
@@ -931,11 +959,7 @@ class GardenRunner:
                 f"suficiente para el walk-forward de la incubadora",
                 ts=ahora_ts, generation=generation, severity="warn",
             )
-        for estado in self.bots.values():
-            estado.equity_window.clear()
-            estado.fees_at_window_start = estado.portfolio.total_fees
-            estado.portfolio.closed_trades.clear()
-        self._window_start_index = hasta
+        self._roll_windows(hasta)
         self.generation = generation
         self._snapshot_if_due(generation)
         self._say(
@@ -959,22 +983,82 @@ class GardenRunner:
             return
         self._say(f"  copia del jardín en {ruta.name}")
 
+    def _current_slice(self, estado: _BotState) -> _Tramo:
+        """La generación que se está cerrando, como tramo."""
+        return _Tramo(
+            start_index=estado.window_start_index,
+            equity=estado.equity_window,
+            trades=list(estado.portfolio.closed_trades),
+            fees_at_start=estado.fees_at_window_start,
+        )
+
+    def _roll_windows(self, hasta: int) -> None:
+        """Cierra el tramo de esta generación y abre el siguiente.
+
+        El tramo que se cierra pasa a la ventana deslizante; el más antiguo
+        cae solo cuando se pasa de ``fitness.live_window_generations``.
+        """
+        for estado in self.bots.values():
+            estado.history.append(self._current_slice(estado))
+            estado.equity_window = []
+            estado.portfolio.closed_trades = []
+            estado.fees_at_window_start = estado.portfolio.total_fees
+            estado.window_start_index = hasta
+        self._window_start_index = hasta
+
+    def _reference_curve(self, serie: _Series, desde: int, largo: int) -> np.ndarray:
+        """El precio del mercado de un bot en cada tick del reloj.
+
+        Cuando ese mercado no tiene vela en un tick se arrastra su último
+        cierre conocido, que es exactamente con lo que se valora al bot. Sin
+        esto, la serie de referencia de un símbolo secundario iría desfasada
+        respecto a su propia curva de capital.
+        """
+        tramo = serie.local[desde : desde + largo]
+        if not tramo.size:
+            return np.zeros(0, dtype="float64")
+        rellenado = np.maximum.accumulate(tramo)
+        rellenado = np.where(rellenado < 0, 0, rellenado)
+        return serie.close[rellenado]
+
     def _window_metrics(self) -> dict[BotId, Metrics]:
-        """Métricas de la ventana vivida, bot a bot."""
+        """Métricas de la ventana deslizante, bot a bot.
+
+        La ventana empieza en la generación que se acaba de cerrar y crece
+        hacia atrás **sólo hasta reunir ``fitness.min_trades`` operaciones**,
+        con el tope de ``fitness.live_window_generations``. Un bot que opera
+        mucho se juzga por su última semana; uno selectivo, por el último mes.
+        Medir siempre una sola generación dejaba al jardín entero sin fitness
+        definido (docs/DECISIONS.md D-030).
+        """
+        minimo = int(self.cfg.fitness.min_trades)
         salida: dict[BotId, Metrics] = {}
         for bot_id, estado in self.bots.items():
-            curva = np.asarray(estado.equity_window, dtype="float64")
+            tramos = [*estado.history, self._current_slice(estado)]
+            elegidos: list[_Tramo] = []
+            operaciones = 0
+            for tramo in reversed(tramos):
+                elegidos.insert(0, tramo)
+                operaciones += tramo.n_trades
+                if operaciones >= minimo:
+                    break
+
+            curva = np.asarray(
+                [valor for tramo in elegidos for valor in tramo.equity], dtype="float64"
+            )
             if curva.size < 2:
                 salida[bot_id] = Metrics()
                 continue
-            serie = self.series[estado.symbol]
-            referencia = serie.close[self._window_start_index :]
+            operaciones_ventana = [op for tramo in elegidos for op in tramo.trades]
+            referencia = self._reference_curve(
+                self.series[estado.symbol], elegidos[0].start_index, int(curva.size)
+            )
             salida[bot_id] = compute_metrics(
                 curva,
-                estado.portfolio.closed_trades,
+                operaciones_ventana,
                 self.cfg.market.timeframe,
-                total_fees=estado.portfolio.total_fees - estado.fees_at_window_start,
-                benchmark=referencia[: curva.size] if referencia.size >= curva.size else None,
+                total_fees=estado.portfolio.total_fees - elegidos[0].fees_at_start,
+                benchmark=referencia if referencia.size == curva.size else None,
             )
         return salida
 
@@ -1098,6 +1182,8 @@ class GardenRunner:
             nuevo.broker = estado.broker
             nuevo.open_trades = estado.open_trades
             nuevo.equity_window = estado.equity_window
+            nuevo.history = estado.history
+            nuevo.window_start_index = estado.window_start_index
             nuevo.benchmark_units = estado.benchmark_units
             nuevo.fees_at_window_start = estado.fees_at_window_start
             nuevo.last_price = estado.last_price

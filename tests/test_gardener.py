@@ -16,7 +16,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from keepgarden.config import Config, apply_overrides, current_params
+from keepgarden.config import (
+    FAMILY_WEIGHTS_KEY,
+    Config,
+    apply_overrides,
+    current_params,
+    family_weights,
+)
 from keepgarden.gardener.apply import OVERRIDES_KEY, ProposalApplier, effective_config
 from keepgarden.gardener.journal import Journal
 from keepgarden.gardener.proposals import Proposal, ProposalError, parse_session
@@ -380,6 +386,90 @@ def test_el_digest_dice_que_hay_pendiente_de_revision(jardin) -> None:
     )
     Journal(repos).write(resultado.session_id, "Sesión de prueba.")
     assert "Pendiente de revisión" in Journal(repos).context_digest(2)
+
+
+# --------------------------------------------------------------------------- #
+# Los pesos de siembra por familia                                             #
+# --------------------------------------------------------------------------- #
+
+
+def _poblacion(config: Config, db, catalog, repos):
+    from keepgarden.evolution.population import Population
+
+    return Population(
+        cfg=config, catalog=catalog, db=db, rng=random.Random(11), repos=repos
+    )
+
+
+def test_rebalance_quotas_deja_los_pesos_donde_el_motor_los_lee(jardin, catalog) -> None:
+    config, db, repos, _ = jardin
+    ProposalApplier(cfg=config, repos=repos).apply(
+        [
+            _propuesta(
+                "REBALANCE_QUOTAS",
+                {"family_weights": {"VOLATILITY": 3.0, "TREND": 1.0}},
+            )
+        ],
+        1,
+    )
+    assert family_weights(db) == {"VOLATILITY": 3.0, "TREND": 1.0}
+
+
+def test_los_pesos_del_jardinero_sesgan_de_verdad_la_siembra(jardin, catalog) -> None:
+    """Antes se guardaban y no los leía nadie: la propuesta no hacía nada."""
+    from keepgarden.types import IdeaFamily
+
+    config, db, repos, _ = jardin
+    poblacion = _poblacion(config, db, catalog, repos)
+    disponibles = [IdeaFamily.VOLATILITY, IdeaFamily.TREND, IdeaFamily.BREAKOUT]
+
+    poblacion._seed_weights = {"VOLATILITY": 8.0, "TREND": 1.0, "BREAKOUT": 1.0}
+    salidas = [poblacion._pick_family(disponibles) for _ in range(400)]
+    volatilidad = salidas.count(IdeaFamily.VOLATILITY) / len(salidas)
+    assert 0.7 < volatilidad < 0.9, f"esperaba ~80 % de VOLATILITY, salió {volatilidad:.0%}"
+    assert set(salidas) == set(disponibles), "los otros no pueden desaparecer"
+
+
+def test_una_familia_con_peso_cero_no_se_siembra(jardin, catalog) -> None:
+    from keepgarden.types import IdeaFamily
+
+    config, db, repos, _ = jardin
+    poblacion = _poblacion(config, db, catalog, repos)
+    disponibles = [IdeaFamily.VOLATILITY, IdeaFamily.TREND]
+    poblacion._seed_weights = {"VOLATILITY": 1.0}
+    assert {poblacion._pick_family(disponibles) for _ in range(50)} == {
+        IdeaFamily.VOLATILITY
+    }
+
+
+def test_sin_pesos_la_siembra_es_la_de_siempre(jardin, catalog) -> None:
+    """Determinismo: un jardín sin REBALANCE_QUOTAS sale idéntico a antes."""
+    from keepgarden.types import IdeaFamily
+
+    config, db, repos, _ = jardin
+    disponibles = [IdeaFamily.VOLATILITY, IdeaFamily.TREND, IdeaFamily.BREAKOUT]
+
+    poblacion = _poblacion(config, db, catalog, repos)
+    con_pesos_vacios = [poblacion._pick_family(disponibles) for _ in range(20)]
+
+    esperado_rng = random.Random(11)
+    esperado = [disponibles[esperado_rng.randrange(len(disponibles))] for _ in range(20)]
+    assert con_pesos_vacios == esperado
+
+
+def test_family_weights_ignora_la_basura(jardin) -> None:
+    import json as _json
+
+    config, db, repos, _ = jardin
+    assert family_weights(db) == {}
+    db.set_meta(
+        FAMILY_WEIGHTS_KEY,
+        _json.dumps({"TREND": 2.0, "BREAKOUT": -1.0, "MOMENTUM": "x", "VOL": 0}),
+    )
+    assert family_weights(db) == {"TREND": 2.0}
+
+    db.set_meta(FAMILY_WEIGHTS_KEY, "esto no es json")
+    assert family_weights(db) == {}
 
 
 # --------------------------------------------------------------------------- #

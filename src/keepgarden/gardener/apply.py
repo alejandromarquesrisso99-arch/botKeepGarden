@@ -21,7 +21,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..config import Config, apply_overrides
+from ..config import (
+    FAMILY_WEIGHTS_KEY,
+    OVERRIDES_KEY,
+    Config,
+    effective_config,
+)
 from ..genome.schema import FeatureGene, Genome, LogicNode, MarketSpec, rule_from_dict
 from ..ids import bot_id_of
 from ..storage.repositories import Repositories
@@ -36,12 +41,6 @@ from ..types import (
     ProposalStatus,
 )
 from .proposals import Proposal, ProposalError, validate_proposal, validate_session
-
-#: Clave de ``garden_meta`` donde viven los ajustes efectivos del jardinero.
-OVERRIDES_KEY = "gardener_overrides"
-
-#: Clave de ``garden_meta`` con los pesos de siembra por familia.
-FAMILY_WEIGHTS_KEY = "gardener_family_weights"
 
 #: Cambio mínimo para que una revisión diga que algo pasó. Por debajo es ruido.
 REVIEW_EPSILON = 0.05
@@ -601,20 +600,6 @@ class ProposalApplier:
         if abs(delta) < REVIEW_EPSILON:
             return (texto, "no_effect")
         return (texto, "worked" if delta > 0 else "backfired")
-
-
-def effective_config(cfg: Config, db: Any) -> Config:
-    """La config con los ajustes del jardinero aplicados.
-
-    La usan el jardín vivo y la incubadora al arrancar: si el jardinero subió
-    la tasa de mutación, el motor tiene que correr con ella sin que nadie haya
-    tocado el YAML.
-    """
-    try:
-        ajustes = json.loads(db.get_meta(OVERRIDES_KEY) or "{}")
-    except (ValueError, TypeError):
-        return cfg
-    return apply_overrides(cfg, ajustes)
 
 
 __all__ = (

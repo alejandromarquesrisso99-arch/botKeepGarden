@@ -363,33 +363,30 @@ descargar nada.
 
 ---
 
-## 10. Una cosa que deberías saber
+## 10. Cómo se juzga a un bot (y por qué la ventana es móvil)
 
-Hay una tensión real entre dos parámetros de la configuración, y se nota en
-cuanto el jardín corre en vivo:
+Un bot sólo recibe fitness cuando hay evidencia: `fitness.min_trades` (10)
+operaciones. El problema es que en una generación de 168 velas un bot opera 2 o
+3 veces, así que midiendo sólo la última semana casi nadie llegaba al mínimo:
+el jardín no podía comparar a nadie y la selección se quedaba con la nota que
+cada bot sacó en la incubadora el día que nació.
 
-- `garden.ticks_per_generation: 168` — una generación dura una semana.
-- `fitness.min_trades: 10` — por debajo de diez operaciones no hay fitness.
+La solución es que la ventana de medición **se mueve**: empieza en la
+generación recién cerrada y crece hacia atrás sólo hasta reunir esas diez
+operaciones, con un tope de `fitness.live_window_generations` (4 por defecto,
+es decir un mes).
 
-Sobre seis meses de jardín medidos, la mediana de operaciones por bot y semana
-es **2,3**, y sólo 5 de 532 pares (bot, generación) llegan a diez. Resultado: el
-fitness vivo casi nunca se define, la selección se queda con la nota que el bot
-sacó en la incubadora el día que nació, y el jardín evoluciona mucho más despacio
-de lo que debería.
+- Un bot que opera mucho se juzga por su última semana.
+- Uno selectivo, por su último mes.
+- El que no opera en tres semanas sigue muriendo por inactivo: el contador de
+  inactividad mira sólo la última generación, no la ventana.
 
-No lo he cambiado porque los dos valores son decisiones tuyas. Las salidas, de
-menos a más intrusiva:
+Medido sobre los mismos seis meses, esto llevó los bots con fitness definido
+del **0,9 % al 47 %**, y las generaciones con mediana de fitness de 4 de 26 a
+26 de 26. Está en `docs/DECISIONS.md`, entradas **D-030** y **D-031**.
 
-1. Bajar `fitness.min_trades` a 3 o 4. Una línea. Riesgo: juzgar con poca
-   evidencia, que es justo lo que ese parámetro evita.
-2. Subir `ticks_per_generation` a 500-700 (un mes). Generaciones más lentas,
-   evidencia de verdad. Cambia el ritmo de todo el jardín.
-3. Medir el fitness vivo sobre una ventana deslizante de varias generaciones en
-   vez de sólo la última. La correcta, y la que más código toca.
-
-Está escrito con detalle en `docs/DECISIONS.md`, entrada **D-030**.
-
----
+Si quieres tocarlo: subir `live_window_generations` da notas más estables y
+más lentas en reaccionar; bajarlo a 1 vuelve al comportamiento anterior.
 
 ## 11. Referencia rápida
 

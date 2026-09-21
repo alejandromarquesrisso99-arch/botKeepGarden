@@ -258,9 +258,15 @@ class ReportBuilder:
             "",
         ]
         if sin_juicio:
+            ventana = (
+                f"una ventana de hasta {self.cfg.fitness.live_window_generations} "
+                f"generaciones"
+                if scope == "live"
+                else "la ventana medida"
+            )
             lineas += [
                 f"> {sin_juicio} de {len(metricas)} bots se quedan sin fitness definido "
-                f"por operar menos de {self.cfg.fitness.min_trades} veces en la ventana. "
+                f"por operar menos de {self.cfg.fitness.min_trades} veces en {ventana}. "
                 "Sin evidencia no hay juicio: la selección les da otra generación.",
                 "",
             ]
