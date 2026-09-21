@@ -8,7 +8,7 @@ grafos de juguete y así el dashboard puede usarlo sin arrastrar dependencias.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Iterable, Mapping, Sequence
 
 from ..types import BotId, BreedOperator, LineageId
@@ -207,9 +207,11 @@ class LineageGraph:
     collapsed: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
+        # asdict y no __dict__: los nodos son dataclasses con slots y no tienen
+        # diccionario de instancia.
         return {
-            "nodes": [n.__dict__ for n in self.nodes],
-            "edges": [e.__dict__ for e in self.edges],
+            "nodes": [asdict(n) for n in self.nodes],
+            "edges": [asdict(e) for e in self.edges],
             "collapsed": self.collapsed,
         }
 
