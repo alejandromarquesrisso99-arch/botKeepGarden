@@ -26,6 +26,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from .genome.schema import MarketSpec
     from .types import Timeframe
 
+#: Velas que recorre un dry-run nuevo si no se le dice otra cosa: seis meses
+#: de velas de 1h, que es lo que pide el criterio de aceptación del hito 5.
+DRY_RUN_BARS = 4380
+
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_NOT_IMPLEMENTED = 3
@@ -660,6 +664,9 @@ def cmd_incubate(args: argparse.Namespace) -> int:
 
     db, repos = _open_garden(cfg, create=False)
     try:
+        from .gardener.apply import effective_config
+
+        cfg = effective_config(cfg, db)
         incubadora = Incubator(
             cfg=cfg, candles=velas, catalog=catalog, repo=repos.incubation
         )
@@ -715,7 +722,75 @@ def cmd_incubate(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Arranca el jardín vivo. Con ``--dry-run`` recorre histórico acelerado."""
-    raise PendingMilestone("hito 5 (El jardín vivo)", "run")
+    import time
+
+    from .config import load_config
+    from .engine.runner import GardenRunner
+    from .types import ExecutionMode
+
+    cfg = load_config(args.config)
+    if cfg.execution_mode is not ExecutionMode.PAPER:
+        # config.py ya lo bloquea; esto es el segundo cerrojo, por si algún día
+        # alguien afloja el primero sin leer docs/DECISIONS.md D-006.
+        print("execution.mode: live está prohibido por diseño.", file=sys.stderr)
+        return EXIT_ERROR
+
+    if not cfg.db_file.exists():
+        print(
+            "no hay jardín todavía. Siémbralo con 'keepgarden garden seed'.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    db, repos = _open_garden(cfg, create=False)
+    try:
+        if not repos.bots.count_alive():
+            print("el jardín está vacío: no hay nada que correr.", file=sys.stderr)
+            return EXIT_ERROR
+
+        runner = GardenRunner(cfg=cfg, db=db)
+        runner.prepare()
+
+        arranque = None
+        if args.dry_run and runner.candles is not None:
+            total = len(runner.candles)
+            if args.since:
+                from .data.backfill import parse_since
+
+                arranque = int(
+                    runner.candles.index.searchsorted(parse_since(args.since))
+                )
+            else:
+                arranque = max(0, total - int(args.bars))
+        modo = "dry-run acelerado" if args.dry_run else "vivo"
+        print(
+            f"jardín {cfg.db_file}\n"
+            f"modo {modo}  ·  {repos.bots.count_alive()} bots vivos  ·  "
+            f"generación {runner.generation}  ·  "
+            f"{cfg.garden.ticks_per_generation} velas por generación"
+        )
+        if not args.dry_run:
+            print("Ctrl+C para parar. El jardín continúa donde lo dejes.")
+
+        empezado = time.perf_counter()
+        runner.run(
+            dry_run=args.dry_run, speed=args.speed, max_ticks=args.max_ticks,
+            start_index=arranque,
+        )
+        tardado = time.perf_counter() - empezado
+
+        print(
+            f"\n{runner.ticks_done} velas procesadas en {tardado:.1f} s  ·  "
+            f"generación {runner.generation}  ·  "
+            f"{repos.bots.count_alive()} bots vivos"
+        )
+        print("resumen: keepgarden garden status  ·  dashboard: keepgarden dashboard")
+        return EXIT_OK
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        db.close()
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
@@ -755,12 +830,134 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Genera el informe de generación para el jardinero."""
-    raise PendingMilestone("hito 7 (El jardinero)", "report")
+    from .config import load_config
+    from .gardener.apply import ProposalApplier
+    from .gardener.report import ReportBuilder
+
+    cfg = load_config(args.config)
+    if not cfg.db_file.exists():
+        print("no hay jardín todavía. Siémbralo con 'keepgarden garden seed'.", file=sys.stderr)
+        return EXIT_ERROR
+
+    db, repos = _open_garden(cfg, create=False)
+    try:
+        builder = ReportBuilder(cfg=cfg, repos=repos)
+        try:
+            generacion = builder._resolve(args.generation)
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_ERROR
+
+        # Antes de escribir el informe se miden las decisiones que tocaba
+        # revisar: el punto 9 es lo que impide repetir el mismo consejo.
+        revisadas = ProposalApplier(cfg=cfg, repos=repos).review_due(generacion)
+
+        if args.stdout:
+            print(builder.build(generacion))
+            return EXIT_OK
+
+        ruta = builder.write(generacion)
+        print(f"informe de la generación {generacion} en {ruta}")
+        if revisadas:
+            print(f"  {revisadas} decisión(es) anterior(es) revisadas y medidas")
+        print("\nsiguiente paso: léelo, escribe las propuestas en JSON y aplícalas con")
+        print("  keepgarden gardener apply --file propuestas.json --dry-run")
+        return EXIT_OK
+    except KeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        db.close()
 
 
 def cmd_gardener_apply(args: argparse.Namespace) -> int:
     """Valida y aplica un archivo de propuestas del jardinero."""
-    raise PendingMilestone("hito 7 (El jardinero)", "gardener apply")
+    from pathlib import Path
+
+    from .config import load_config
+    from .gardener.apply import ProposalApplier
+    from .gardener.journal import Journal
+    from .gardener.proposals import ProposalError, parse_session
+
+    cfg = load_config(args.config)
+    if not cfg.db_file.exists():
+        print("no hay jardín todavía. Siémbralo con 'keepgarden garden seed'.", file=sys.stderr)
+        return EXIT_ERROR
+
+    archivo = Path(args.file)
+    if not archivo.exists():
+        print(f"no existe el archivo de propuestas {archivo}", file=sys.stderr)
+        return EXIT_ERROR
+
+    try:
+        propuestas = parse_session(archivo.read_text(encoding="utf-8"))
+    except (ProposalError, ValueError) as exc:
+        print(f"el archivo de propuestas no es válido: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    db, repos = _open_garden(cfg, create=False)
+    try:
+        generacion = int(db.get_meta("current_generation") or 0)
+        aplicador = ProposalApplier(cfg=cfg, repos=repos)
+
+        print(f"{len(propuestas)} propuestas sobre la generación {generacion}\n")
+
+        if args.dry_run:
+            try:
+                validas, invalidas = aplicador.check(propuestas, generacion)
+            except ProposalError as exc:
+                print(
+                    f"la sesión entera se pasa de un límite acumulativo:\n  {exc}",
+                    file=sys.stderr,
+                )
+                return EXIT_ERROR
+            for p in validas:
+                print(f"  ok         {p.kind:<18} {p.target or p.payload.get('into', '')}")
+            for p, motivo in invalidas:
+                print(f"  RECHAZADA  {p.kind:<18} {motivo}", file=sys.stderr)
+            if invalidas:
+                print(
+                    f"\n{len(validas)} válidas, {len(invalidas)} rechazadas. "
+                    "Las válidas se aplicarían igual; corrige las otras si te importan.",
+                )
+                return EXIT_ERROR
+            print("\ntodas válidas. Quita --dry-run para aplicarlas.")
+            return EXIT_OK
+
+        try:
+            resultado = aplicador.apply(propuestas, generacion)
+        except ProposalError as exc:
+            print(
+                f"la sesión entera se pasa de un límite acumulativo:\n  {exc}",
+                file=sys.stderr,
+            )
+            print("\nNo se ha aplicado nada. Corrige y vuelve a intentarlo.", file=sys.stderr)
+            return EXIT_ERROR
+
+        for p in resultado.applied:
+            print(f"  aplicada   {p.kind:<18} {p.target or ''}")
+        for p, motivo in resultado.rejected:
+            print(f"  RECHAZADA  {p.kind:<18} {motivo}", file=sys.stderr)
+        if resultado.created_bots:
+            print(f"\nhan nacido {len(resultado.created_bots)} bots: "
+                  f"{', '.join(resultado.created_bots[:6])}"
+                  f"{'…' if len(resultado.created_bots) > 6 else ''}")
+        else:
+            print("\nno ha nacido ninguno: lo que propusiste no pasó la incubadora.")
+
+        if args.journal:
+            Journal(repos).write(resultado.session_id, args.journal)
+            print("entrada de diario guardada.")
+        else:
+            print(
+                "\naviso: sesión sin entrada de diario. Vuelve a lanzarlo con "
+                "--journal \"...\" o escríbela ahora: es lo que te devolverá el "
+                "contexto dentro de un mes.",
+                file=sys.stderr,
+            )
+        return EXIT_OK if not resultado.rejected else EXIT_ERROR
+    finally:
+        db.close()
 
 
 def cmd_config_show(args: argparse.Namespace) -> int:
@@ -880,6 +1077,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true", help="recorre histórico como si fuera vivo")
     run.add_argument("--speed", type=float, default=0.0, help="velas/segundo en dry-run; 0 = máxima")
     run.add_argument("--max-ticks", type=int, default=None)
+    run.add_argument(
+        "--bars", type=int, default=DRY_RUN_BARS,
+        help=f"velas de histórico que recorre un dry-run nuevo (por defecto {DRY_RUN_BARS}, ~6 meses)",
+    )
+    run.add_argument("--since", default=None, help="fecha de arranque del dry-run (YYYY-MM-DD)")
     run.set_defaults(func=cmd_run)
 
     # -- dashboard --------------------------------------------------------- #
@@ -900,6 +1102,7 @@ def build_parser() -> argparse.ArgumentParser:
     ga = gard_sub.add_parser("apply", help="valida y aplica propuestas")
     ga.add_argument("--file", required=True, help="JSON con las propuestas")
     ga.add_argument("--dry-run", action="store_true", help="sólo valida, no aplica")
+    ga.add_argument("--journal", default="", help="entrada de diario de la sesión")
     ga.set_defaults(func=cmd_gardener_apply)
 
     # -- config / catalog -------------------------------------------------- #

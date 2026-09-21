@@ -16,13 +16,9 @@ import inspect
 
 import pytest
 
-CONTRACT_MODULES = [
-    "keepgarden.engine.clock",
-    "keepgarden.engine.runner",
-    "keepgarden.gardener.report",
-    "keepgarden.gardener.apply",
-    "keepgarden.gardener.journal",
-]
+#: Ya no queda ningún contrato sin implementar: el inventario se queda vacío a
+#: propósito, para que el test siga vigilando la forma si alguien añade uno.
+CONTRACT_MODULES: list[str] = []
 
 IMPLEMENTED_MODULES = [
     "keepgarden.types",
@@ -60,6 +56,11 @@ IMPLEMENTED_MODULES = [
     "keepgarden.storage.repositories",
     "keepgarden.dashboard.api",
     "keepgarden.dashboard.app",
+    "keepgarden.engine.clock",
+    "keepgarden.engine.runner",
+    "keepgarden.gardener.report",
+    "keepgarden.gardener.apply",
+    "keepgarden.gardener.journal",
 ]
 
 
