@@ -17,6 +17,7 @@ from ..evaluation.fitness import (
     FitnessBreakdown,
     RobustScale,
     compute_fitness,
+    effective_fitness,
     pareto_front,
 )
 from ..evaluation.metrics import Metrics
@@ -136,6 +137,7 @@ class Population:
         incubator: "Incubator",
         *,
         window_metrics: Mapping[BotId, Metrics] | None = None,
+        scope: str = "incubator",
     ) -> GenerationOutcome:
         """Los 10 pasos de docs/ARCHITECTURE.md §5, en orden:
 
@@ -157,6 +159,11 @@ class Population:
         jardín vivo las trae de sus propios trades (hito 5); la incubadora las
         calcula con walk-forward. Sin ellas se miden aquí contra la incubadora,
         que es lo que hace ``keepgarden incubate``.
+
+        ``scope`` es de dónde salen esas métricas y con qué etiqueta se guardan
+        en ``bot_metrics``: ``live`` para el jardín vivo, ``incubator`` para una
+        cosecha. De él depende también cómo se combina el fitness: el vivo pesa
+        0.70 y el backtest 0.30 (``fitness.live_weight``).
         """
         assert self.repos is not None
         genomas = self.alive_genomes()
@@ -254,7 +261,7 @@ class Population:
 
             self._persist(
                 generation, genomas, metricas, fitness, especies, frente,
-                diversidad, cuotas_familia, outcome,
+                diversidad, cuotas_familia, outcome, scope,
             )
 
         definidos = [v for v in escalares.values() if v == v]
@@ -644,6 +651,7 @@ class Population:
         diversidad: float,
         cuotas_familia: Mapping[IdeaFamily, float],
         outcome: GenerationOutcome,
+        scope: str = "incubator",
     ) -> None:
         assert self.repos is not None
         especie_de = {m: sp.species_id for sp in especies for m in sp.members}
@@ -664,7 +672,8 @@ class Population:
             fila["fitness"] = fitness[bot].total if fitness[bot].is_defined else None
             fila["fitness_rank"] = rango.get(bot)
             fila["on_pareto_front"] = int(bot in frente)
-            self.repos.metrics.upsert(bot, generation, "incubator", fila)
+            self.repos.metrics.upsert(bot, generation, scope, fila)
+            self._update_fitness(bot, fitness[bot], edades.get(bot, 0), scope)
             self.repos.bots.set_generation_stats(
                 bot,
                 generations_alive=edades.get(bot, 0),
@@ -706,6 +715,33 @@ class Population:
             },
         )
         self.db.set_meta("current_generation", generation)
+
+    def _update_fitness(
+        self, bot: BotId, breakdown: FitnessBreakdown, edad: int, scope: str
+    ) -> None:
+        """Deja en ``bots`` el fitness vigente, no el del día que nació.
+
+        Con ``scope='live'`` el valor medido entra como fitness vivo y el
+        efectivo sale de ``effective_fitness``, que es quien aplica el reparto
+        0.70/0.30 y la regla de las dos generaciones de gracia.
+        """
+        assert self.repos is not None
+        fila = self.repos.bots.get(bot)
+        if fila is None:
+            return
+        valor = breakdown.total if breakdown.is_defined else None
+        incubadora = fila["fitness_incubator"]
+        vivo = fila["fitness_live"]
+        if scope == "live":
+            vivo = valor
+        else:
+            incubadora = valor
+        self.repos.bots.set_fitness(
+            bot,
+            incubator=incubadora,
+            live=vivo,
+            effective=effective_fitness(incubadora, vivo, edad, self.cfg.fitness),
+        )
 
     def _check_alerts(
         self,
