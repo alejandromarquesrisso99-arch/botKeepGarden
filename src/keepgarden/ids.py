@@ -54,6 +54,16 @@ def new_genome_id(bot_id: BotId) -> GenomeId:
     return bot_id.replace("bot_", "gen_", 1)
 
 
+def bot_id_of(genome_id: GenomeId) -> BotId:
+    """La inversa de ``new_genome_id``: de quién es este genoma.
+
+    Hace falta porque la genealogía y las carteras se indexan por bot mientras
+    que los operadores evolutivos trabajan con genomas, y sin esto cada módulo
+    acabaría haciendo el ``replace`` por su cuenta.
+    """
+    return genome_id.replace("gen_", "bot_", 1)
+
+
 def new_lineage_id(seed_bot_id: BotId, family: str) -> LineageId:
     """Id del linaje raíz, creado cuando nace un bot por ``SEED``."""
     short = seed_bot_id.replace("bot_", "")[:6]
@@ -100,6 +110,7 @@ def unique_names(bot_ids: Iterable[BotId]) -> dict[BotId, str]:
 
 
 __all__ = (
+    "bot_id_of",
     "new_bot_id",
     "new_genome_id",
     "new_lineage_id",
