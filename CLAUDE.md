@@ -99,7 +99,10 @@ pero cambiar su forma rompe el resto: si necesitas hacerlo, anótalo en
    genome/random_genome.py  ← hito 2
 ✅ engine/broker.py, engine/portfolio.py, engine/backtest.py,
    evaluation/metrics.py  ← hito 3
-🔨 todo lo demás
+✅ genome/distance.py, evaluation/walkforward.py, evaluation/fitness.py,
+   evolution/{mutation,crossover,fusion,selection,speciation,population}.py,
+   engine/incubator.py, storage/db.py, storage/repositories.py  ← hito 4
+🔨 todo lo demás (engine/clock.py, engine/runner.py, gardener/*, dashboard/*)
 ```
 
 ## Orden de trabajo

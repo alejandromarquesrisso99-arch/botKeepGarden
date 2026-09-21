@@ -295,3 +295,119 @@ del precio, que es exactamente lo contrario de lo que un trailing debe hacer:
 soltaría la posición justo cuando más protección hace falta. Con el ATR de
 entrada, el stop sólo se mueve a favor y el 1R de la operación significa lo
 mismo de principio a fin.
+
+---
+
+### D-019 · 2026-09-21 · La distancia genética mira el gen antes que el parámetro, y el fitness admite una escala congelada
+
+**Contexto.** Dos piezas del hito 4 salieron mal calibradas nada más medirlas.
+
+La primera, la distancia genética. Con el Jaccard definido sólo sobre
+`(kind, params discretizados)`, dos cruces de medias con periodos distintos no
+comparten absolutamente nada y acaban a distancia 0.48: especies separadas. Pero
+la especiación existe justo para impedir que el jardín entero acabe siendo
+"variaciones de la misma EMA", así que el mecanismo fallaba en el único caso que
+tenía que cubrir. Además, el operando derecho de una hoja se normalizaba a la
+palabra `const` sin mirar su valor, de modo que `TWEAK_THRESHOLD` —una de cada
+cinco mutaciones— producía hijos a distancia exactamente cero de su padre.
+
+La segunda, el fitness. Es un z-score robusto contra la población viva, así que
+su mediana vale 0 por construcción en toda generación. Eso está bien para
+seleccionar, que es comparar contemporáneos, pero hace imposible responder a
+"¿está mejorando el jardín?", que es justo el criterio de aceptación del hito.
+
+**Decisión.** Tres cambios.
+
+1. El término de features es mitad Jaccard sobre los `kind` (qué mira el bot) y
+   mitad sobre `kind` + parámetros en rejilla (cómo lo ha afinado). La constante
+   está en `distance.KIND_SHARE`.
+2. Las constantes de las reglas entran en la hoja normalizada con su valor
+   discretizado, no como una etiqueta genérica.
+3. `compute_fitness` acepta una `reference` —el centro y la escala de otra
+   población, que produce `robust_reference`—. `incubate` congela la de la
+   generación 0 y mide contra ella todas las demás.
+
+**Consecuencias.** Dos variaciones de la misma idea caen ahora en la misma
+especie y por encima del umbral de clon, que es donde tienen que estar. La
+mediana de fitness pasa a ser un número comparable entre generaciones y el
+progreso del jardín se puede leer de un vistazo. Coste: el fitness tiene dos
+modos y hay que saber cuál se está usando; el relativo manda en la selección y
+el absoluto sólo sirve para mirar desde fuera.
+
+---
+
+### D-020 · 2026-09-21 · Un hijo sigue mutando hasta dejar de parecerse a su padre
+
+**Contexto.** `speciation.clone_threshold` es 0.15 y una mutación puntual mueve
+la distancia entre 0.04 y 0.14. Es decir: casi todo hijo de una sola mutación es
+un casi-clon, y la incubadora lo rechazaba sin llegar a probarlo. Con
+`TWEAK_PARAM` y `TWEAK_THRESHOLD` sumando el 55 % de los pesos, más de la mitad
+de la descendencia por mutación se perdía antes de nacer.
+
+**Decisión.** Tras aplicar sus 1-3 mutaciones, `mutate` mide la distancia al
+padre y sigue mutando —hasta `MAX_EXTRA_MUTATIONS` veces más— mientras siga por
+debajo del umbral de clon.
+
+**Consecuencias.** La proporción de hijos rechazados por clon baja del 50 % al
+4 %, y el operador de mutación vuelve a explorar de verdad. A cambio, una
+mutación es un salto algo mayor de lo que la tabla de `docs/EVOLUTION.md`
+sugiere: la distancia mediana al padre queda en 0.31. La alternativa era bajar
+`clone_threshold`, pero ese umbral también protege al jardín de llenarse de
+casi-repeticiones, y aflojarlo habría tenido un coste mucho mayor.
+
+---
+
+### D-021 · 2026-09-21 · El walk-forward desliza el train y reparte la validación por todo el histórico
+
+**Contexto.** El diseño original decía "pliegues anclados: el train empieza
+siempre al principio y crece". Implementado así sobre los siete años de
+BTC/USDT, el resultado fue que **ni un solo genoma de 200 sembrados pasaba la
+incubadora**, y los dos genomas de ejemplo del repositorio tampoco. Al mirarlo
+de cerca había dos causas distintas:
+
+1. Con el train anclado, el último pliegue corría seis años seguidos de una tirada.
+   El freno de `risk.hard_max_drawdown` saltaba casi siempre en los primeros
+   años, y a partir de ahí el bot quedaba abortado y los pliegues siguientes
+   medían una curva plana. Además, comparar el Sortino de seis años con el de
+   una validación de tres meses para calcular la degradación fuera de muestra no
+   compara nada: son ventanas de escalas y regímenes distintos.
+2. Las cinco ventanas de validación se apilaban contra el borde del holdout, así
+   que las cinco caían dentro de los últimos quince meses —cuatro de ellos
+   bajistas—. Exigir la **mediana** de los cinco pliegues dejaba de significar
+   "funciona en mercados distintos" para significar "funciona en éste", y sobre
+   spot sólo de largos eso era pedir que un bot ganara dinero en un año y medio
+   de caídas.
+
+**Decisión.** El train mide `incubator.train_bars` velas y **desliza**: cada
+pliegue tiene su propia ventana de un año, no una acumulada desde 2019. Y las
+ventanas de validación se **reparten a pasos iguales por todo el tramo
+evaluable**, de la más antigua posible a la que toca el embargo del holdout.
+Cada pliegue se corre además como un backtest independiente con capital fresco.
+La propia configuración ya apuntaba a esto: `train_bars: 8760 # ~1 año`.
+
+**Consecuencias.** Sobre BTC/USDT los cinco pliegues cubren ahora 2020, 2021,
+2023, 2024 y 2026, con mercados al alza y a la baja, y la mediana vuelve a
+significar robustez entre regímenes. La tasa de aprobación de genomas sembrados
+al azar pasa de 0 de 200 a 5 de 200, que es un filtro exigente pero no
+imposible. Un mal año ya no puede vaciar los pliegues siguientes. Coste: se
+pierde la propiedad de "el train contiene toda la historia disponible", que en
+un sistema que no ajusta parámetros no aportaba nada, y el coste de cómputo pasa
+a ser `n_folds` backtests cortos por candidato en vez de uno largo.
+
+---
+
+### D-022 · 2026-09-21 · Un ensemble sí reescribe su genoma al morir un miembro
+
+**Contexto.** El esquema dice que un bot tiene un genoma y no cambia: mutar
+produce un bot nuevo, y de ahí que la genealogía signifique algo. Pero
+`docs/EVOLUTION.md` §FUSION exige que, cuando muere un padre, el ensemble
+reparta su peso entre los vivos.
+
+**Decisión.** `BotRepository.reweight_ensemble` reescribe el `payload` de ese
+genoma en sitio, y es el único camino del sistema que lo hace.
+
+**Consecuencias.** La excepción está acotada a un método con nombre propio y a
+un caso que no es evolución: un ensemble que pierde un miembro sigue siendo el
+mismo organismo, no uno nuevo. Queda registrado como evento
+`FUSION_REWEIGHTED`, de forma que el cambio es auditable aunque el genoma se
+haya sobrescrito.

@@ -17,23 +17,11 @@ import inspect
 import pytest
 
 CONTRACT_MODULES = [
-    "keepgarden.genome.distance",
     "keepgarden.engine.clock",
-    "keepgarden.engine.incubator",
     "keepgarden.engine.runner",
-    "keepgarden.evaluation.fitness",
-    "keepgarden.evaluation.walkforward",
-    "keepgarden.evolution.mutation",
-    "keepgarden.evolution.crossover",
-    "keepgarden.evolution.fusion",
-    "keepgarden.evolution.selection",
-    "keepgarden.evolution.speciation",
-    "keepgarden.evolution.population",
     "keepgarden.gardener.report",
     "keepgarden.gardener.apply",
     "keepgarden.gardener.journal",
-    "keepgarden.storage.db",
-    "keepgarden.storage.repositories",
     "keepgarden.dashboard.api",
     "keepgarden.dashboard.app",
 ]
@@ -60,6 +48,18 @@ IMPLEMENTED_MODULES = [
     "keepgarden.engine.portfolio",
     "keepgarden.engine.backtest",
     "keepgarden.evaluation.metrics",
+    "keepgarden.genome.distance",
+    "keepgarden.engine.incubator",
+    "keepgarden.evaluation.fitness",
+    "keepgarden.evaluation.walkforward",
+    "keepgarden.evolution.mutation",
+    "keepgarden.evolution.crossover",
+    "keepgarden.evolution.fusion",
+    "keepgarden.evolution.selection",
+    "keepgarden.evolution.speciation",
+    "keepgarden.evolution.population",
+    "keepgarden.storage.db",
+    "keepgarden.storage.repositories",
 ]
 
 
