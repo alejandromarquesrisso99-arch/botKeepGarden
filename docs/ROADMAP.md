@@ -133,19 +133,31 @@ El bucle continuo sobre datos reales.
 
 ---
 
-## Hito 6 — Dashboard
+## Hito 6 — Dashboard  ✅
 
 Ver el jardín.
 
 - `dashboard/app.py`, `api.py`, front completo.
 - Las seis vistas de `DASHBOARD.md`, con la genealogía y su slider temporal como
-  pieza central.
+  pieza central, más una séptima de **cría** (docs/DECISIONS.md D-023).
 
 **Aceptación**
-- `keepgarden dashboard` abre y pinta un jardín de 25 generaciones en < 2 s.
-- El slider temporal reproduce la evolución generación a generación.
-- Con 2.000 bots históricos la vista de genealogía sigue siendo usable.
-- El dashboard funciona con el motor apagado.
+- `keepgarden dashboard` abre y pinta un jardín de 25 generaciones en < 2 s.  ✅
+- El slider temporal reproduce la evolución generación a generación.  ✅
+- Con 2.000 bots históricos la vista de genealogía sigue siendo usable.  ✅
+  (por encima de `dashboard.graph_node_limit` se pliegan los linajes extintos)
+- El dashboard funciona con el motor apagado.  ✅ abre la base en `mode=ro` y es
+  un proceso aparte; un test comprueba que recorrer toda la API no modifica el
+  archivo.
+
+Sobre un jardín de 26 generaciones y 61 bots salido de `incubate`, la
+genealogía pinta 61 nodos y 35 vínculos, y el slider en la generación 8 enseña
+48 bots con los 21 que estaban vivos *entonces*, no los de hoy.
+
+Lo que todavía se ve vacío —curva de capital del jardín, operaciones de un bot,
+heatmap de correlación— es lo que escribe el hito 5: las cosechas de incubadora
+criban genomas, no simulan cartera. Cada hueco lo dice en su sitio en vez de
+enseñar un gráfico en blanco.
 
 ---
 

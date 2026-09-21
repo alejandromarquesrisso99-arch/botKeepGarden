@@ -6,8 +6,9 @@ Abre `state/db/garden.db` en **sólo lectura** (`file:...?mode=ro`, WAL). El
 dashboard nunca escribe en el jardín. Si el motor no está corriendo, el dashboard
 funciona igual mostrando el último estado.
 
-Front: HTML + JS vanilla, sin build. ECharts desde CDN para los gráficos. Sin
-framework: esto se mira en local, no necesita tooling.
+Front: HTML + JS vanilla, sin build. ECharts desde CDN para los gráficos (con
+un espejo detrás; sin red, cada gráfico avisa en su hueco y las tablas siguen
+funcionando). Sin framework: esto se mira en local, no necesita tooling.
 
 ## Vistas
 
@@ -69,7 +70,24 @@ reproducir y ver cómo el jardín se puebla, converge, se diversifica y muta.
 El scatter genético y el heatmap de correlación juntos responden a la pregunta
 que importa: *¿este jardín tiene ideas distintas o cincuenta copias de la misma?*
 
-### 6. Diario del jardinero
+### 6. Cría  ← *añadida en el hito 6*
+
+La mitad invisible de la evolución: lo que se concibió y no llegó a nacer.
+
+- Tarjetas del embudo: concebidos → aprobados por la incubadora → nacidos →
+  todavía vivos.
+- Gráfico del embudo por generación: barras de candidatos y aprobados, líneas
+  de nacidos y supervivientes.
+- Barras horizontales de **por qué se descarta**: clon de un vivo, opera poco,
+  sortino bajo, freno de drawdown, se degrada fuera de muestra.
+- Tabla por operador: nacidos, vivos, supervivencia a tres generaciones, edad
+  media y fitness medio. Es la tabla que dice si el cupo de mutación, cruce,
+  fusión y semilla está bien repartido.
+- Tabla de fusiones y tabla de los bots con más descendencia directa.
+- La criba de una generación, candidato a candidato, con sus métricas medianas
+  y el motivo exacto del rechazo.
+
+### 7. Diario del jardinero
 
 Las entradas del diario en orden inverso, cada una con las propuestas que
 generó, su estado (aplicada / rechazada / pendiente de revisión) y el resultado
@@ -95,10 +113,22 @@ GET  /api/species/correlation
 GET  /api/journal
 GET  /api/events?type=&limit=
 GET  /api/alerts
+
+# la cría (hito 6, ver docs/DECISIONS.md D-023)
+GET  /api/breeding
+GET  /api/incubation/{n}
+GET  /api/species/scatter
 ```
 
 `/api/lineage/graph` acepta `until_generation` precisamente para alimentar el
-slider temporal reproduciendo el pasado.
+slider temporal reproduciendo el pasado. Cada nodo trae además `status_at`: el
+estado que el bot tenía **en** esa generación, no el de hoy. Sin eso el slider
+enseñaría el pasado pintado con los muertos de después, que es justo lo
+contrario de reproducir la evolución.
+
+Las respuestas caras —grafo genealógico, matriz de correlación, mapa genético—
+se cachean en memoria y se invalidan por `garden_meta.current_generation`:
+mientras el motor no cierre una generación nueva, el pasado no cambia.
 
 ## Rendimiento
 

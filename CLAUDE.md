@@ -102,7 +102,10 @@ pero cambiar su forma rompe el resto: si necesitas hacerlo, anótalo en
 ✅ genome/distance.py, evaluation/walkforward.py, evaluation/fitness.py,
    evolution/{mutation,crossover,fusion,selection,speciation,population}.py,
    engine/incubator.py, storage/db.py, storage/repositories.py  ← hito 4
-🔨 todo lo demás (engine/clock.py, engine/runner.py, gardener/*, dashboard/*)
+✅ dashboard/api.py, dashboard/app.py, dashboard/static/*  ← hito 6
+   (`keepgarden dashboard`; se hizo antes que el hito 5 porque la evolución y la
+   cría ya se podían mirar con lo que escribe `incubate`)
+🔨 todo lo demás (engine/clock.py, engine/runner.py, gardener/*)
 ```
 
 ## Orden de trabajo

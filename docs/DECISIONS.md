@@ -411,3 +411,60 @@ un caso que no es evolución: un ensemble que pierde un miembro sigue siendo el
 mismo organismo, no uno nuevo. Queda registrado como evento
 `FUSION_REWEIGHTED`, de forma que el cambio es auditable aunque el genoma se
 haya sobrescrito.
+
+---
+
+### D-023 · 2026-09-21 · El dashboard tiene una vista de cría, y no sólo de resultados
+
+**Contexto.** `docs/DASHBOARD.md` describía seis vistas centradas en lo que el
+jardín *es* ahora: población, genealogía, generaciones, especies, diario. La
+incubadora ya escribía en `incubation_runs` todo lo que **no** llegó a nacer —
+candidato, operador, padres, métricas por pliegue, motivo del rechazo — y nada
+de eso se podía mirar sin abrir SQLite a mano.
+
+**Decisión.** Se añade una séptima vista, *Cría*, y dos endpoints fuera de la
+lista original de `DASHBOARD.md §API`:
+
+```
+GET /api/breeding            el embudo completo: concebidos → aprobados → nacidos → vivos
+GET /api/incubation/{n}      la criba de una generación, candidato a candidato
+```
+
+Los motivos de rechazo se agrupan en categorías contables (`reject_category`)
+porque el texto crudo trae números —"sortino -2.60 por debajo del umbral
+0.86"— y como cadena literal cada rechazo sería su propia categoría.
+
+**Consecuencias.** La mitad invisible de la evolución pasa a ser visible: se ve
+qué operador produce clones, qué fracción de la cosecha muere en la criba y qué
+forma de criar da bots que duran. El coste es que `DASHBOARD.md §API` ya no es
+la lista completa de endpoints; queda anotada allí.
+
+---
+
+### D-024 · 2026-09-21 · El dashboard abre una conexión SQLite por hilo
+
+**Contexto.** FastAPI atiende los endpoints síncronos en un pool de hilos y
+SQLite prohíbe usar una conexión desde un hilo distinto del que la creó. Con
+una sola conexión compartida, cualquier petición que no cayera en el hilo
+principal moría con `ProgrammingError`.
+
+**Decisión.** `dashboard/app.py` mantiene un `threading.local` con un
+`DashboardAPI` —y por tanto un `Database`— por hilo, y las cierra todas al
+apagar. No se toca `storage/db.py`: el motor es de un solo hilo y no necesita
+pagar ese coste.
+
+**Consecuencias.** Un puñado de conexiones de sólo lectura, no una por
+petición, porque los hilos del pool se reutilizan. La caché de respuestas caras
+sigue siendo única y compartida: son datos, no conexiones.
+
+---
+
+### D-025 · 2026-09-21 · `LineageGraph.to_dict` usaba `__dict__` sobre dataclasses con slots
+
+**Contexto.** `GraphNode` y `GraphEdge` son `@dataclass(slots=True)` y no tienen
+diccionario de instancia, así que `to_dict()` —escrito en el hito 4 y nunca
+ejercitado— reventaba con `AttributeError` en cuanto el dashboard pidió el
+grafo.
+
+**Decisión.** Usar `dataclasses.asdict`. Es una corrección de un bug, no un
+cambio de forma: la firma y el contenido del diccionario son los prometidos.
