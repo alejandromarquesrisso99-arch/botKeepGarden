@@ -320,14 +320,167 @@ def cmd_genome_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _open_garden(cfg: Config, *, create: bool = True):
+    """Abre la base del jardín y devuelve sus repositorios."""
+    from .storage.db import open_database
+    from .storage.repositories import Repositories
+
+    db = open_database(cfg.db_file, create=create)
+    return db, Repositories.open(db)
+
+
 def cmd_garden_seed(args: argparse.Namespace) -> int:
     """Siembra la población inicial y crea la base del jardín."""
-    raise PendingMilestone("hito 4 (Incubadora y evolución)", "garden seed")
+    import random
+    import time
+
+    from .config import load_config
+    from .genome.distance import mean_pairwise_distance
+    from .genome.random_genome import random_population
+    from .genome.schema import MarketSpec
+    from .ids import bot_id_of, label
+    from .types import EventType
+
+    cfg = load_config(args.config)
+    catalog = _load_catalog(cfg)
+    tamaño = args.size if args.size is not None else cfg.garden.target_population
+
+    if args.reset and cfg.db_file.exists():
+        print(f"borrando el jardín anterior: {cfg.db_file}")
+        cfg.db_file.unlink()
+        for extra in (".db-wal", ".db-shm"):
+            sobrante = cfg.db_file.with_suffix(extra)
+            if sobrante.exists():
+                sobrante.unlink()
+
+    db, repos = _open_garden(cfg)
+    try:
+        vivos = repos.bots.count_alive()
+        if vivos and not args.reset:
+            print(
+                f"el jardín ya tiene {vivos} bots vivos. Usa --reset para "
+                f"empezar de cero (es destructivo).",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+
+        market = MarketSpec(
+            venue=cfg.market.venue, symbol=cfg.primary_symbol,
+            timeframe=cfg.market.timeframe,
+        )
+        rng = random.Random(cfg.seed)
+        print(f"sembrando {tamaño} bots sobre {market.symbol} {market.timeframe}…")
+        genomas = random_population(tamaño, market, cfg, catalog, rng)
+        if len(genomas) < tamaño:
+            print(
+                f"  aviso: sólo han salido {len(genomas)} genomas válidos",
+                file=sys.stderr,
+            )
+
+        ahora = int(time.time() * 1000)
+        with db.transaction():
+            for genoma in genomas:
+                bot = repos.bots.create(
+                    genoma, generation=0,
+                    initial_capital=cfg.garden.initial_capital_per_bot,
+                )
+                repos.events.log(
+                    EventType.BOT_BORN, f"se siembra {bot} ({genoma.family})",
+                    ts=ahora, generation=0, bot_id=bot,
+                    payload={"operator": "SEED", "family": str(genoma.family)},
+                )
+            repos.generations.open(0, ahora)
+            db.set_meta("current_generation", 0)
+            db.set_meta("seed", cfg.seed)
+            db.set_meta("symbol", market.symbol)
+            db.set_meta("timeframe", market.timeframe)
+            db.set_meta("venue", market.venue)
+
+        diversidad = mean_pairwise_distance(
+            genomas, cfg.speciation.distance_weights, catalog
+        )
+        familias: dict[str, int] = {}
+        for g in genomas:
+            familias[str(g.family)] = familias.get(str(g.family), 0) + 1
+
+        print(f"\n{len(genomas)} bots vivos en {cfg.db_file}")
+        print(f"diversidad genética  {diversidad:.3f}"
+              f"  (suelo {cfg.evolution.diversity_floor})")
+        for familia, n in sorted(familias.items()):
+            print(f"  {familia:<16} {n:>3}  {n / len(genomas):>5.0%}")
+        print("\nprimeros bots:")
+        for genoma in genomas[:5]:
+            print(f"  {label(bot_id_of(genoma.id))}  {genoma.family}")
+        return EXIT_OK
+    finally:
+        db.close()
 
 
 def cmd_garden_status(args: argparse.Namespace) -> int:
     """Resumen del jardín en la terminal: población, generación, capital."""
-    raise PendingMilestone("hito 4 (Incubadora y evolución)", "garden status")
+    from .config import load_config
+    from .ids import label
+
+    cfg = load_config(args.config)
+    if not cfg.db_file.exists():
+        print(
+            "no hay jardín todavía. Siémbralo con 'keepgarden garden seed'.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    db, repos = _open_garden(cfg, create=False)
+    try:
+        vivos = repos.bots.alive()
+        generacion = int(db.get_meta("current_generation") or 0)
+        print(f"\njardín  {cfg.db_file}")
+        print(f"símbolo {db.get_meta('symbol') or cfg.primary_symbol}"
+              f" {db.get_meta('timeframe') or cfg.market.timeframe}"
+              f"  ·  semilla {db.get_meta('seed') or cfg.seed}")
+        print(f"generación {generacion}  ·  {len(vivos)} bots vivos"
+              f"  ·  {len(repos.bots.all())} en total")
+
+        ultima = repos.generations.latest()
+        if ultima is not None and ultima["closed_at"]:
+            print(
+                f"\núltima generación cerrada: {ultima['generation']}"
+                f"  nacimientos {ultima['births']}  muertes {ultima['deaths']}"
+                f"  descartados {ultima['discarded']}"
+            )
+            if ultima["fitness_median"] is not None:
+                print(
+                    f"  fitness  mediana {ultima['fitness_median']:+.3f}"
+                    f"  mejor {ultima['fitness_best']:+.3f}"
+                    f"  ·  diversidad {ultima['genetic_diversity']:.3f}"
+                    f"  ·  {ultima['n_species']} especies"
+                )
+
+        if vivos:
+            capital = sum(float(b["equity"]) for b in vivos)
+            print(f"\ncapital del jardín {capital:,.2f}")
+            mejores = sorted(
+                (b for b in vivos if b["fitness_effective"] is not None),
+                key=lambda b: -float(b["fitness_effective"]),
+            )[:8]
+            if mejores:
+                print("\nmejores bots:")
+                for b in mejores:
+                    print(
+                        f"  {label(b['bot_id']):<28} {b['family']:<16}"
+                        f" fit {float(b['fitness_effective']):+.3f}"
+                        f"  gen {b['born_generation']:>3}"
+                        f"  ops {b['total_trades']:>4}"
+                    )
+
+        alertas = repos.events.open_alerts()
+        if alertas:
+            print("\nalertas abiertas:")
+            for a in alertas:
+                print(f"  {a['kind']:<18} {a['value']:.3f} vs {a['threshold']:.3f}"
+                      f"  {a['detail'] or ''}")
+        return EXIT_OK
+    finally:
+        db.close()
 
 
 def _save_equity(result: object, cfg: Config, genome_id: str) -> str:
@@ -475,7 +628,89 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
 def cmd_incubate(args: argparse.Namespace) -> int:
     """Cosechas de incubadora sobre histórico: el reloj rápido."""
-    raise PendingMilestone("hito 4 (Incubadora y evolución)", "incubate")
+    import random
+
+    from .config import load_config
+    from .engine.incubator import Incubator
+    from .evaluation.fitness import robust_reference
+    from .evolution.population import Population
+    from .genome.schema import MarketSpec
+
+    cfg = load_config(args.config)
+    catalog = _load_catalog(cfg)
+    if not cfg.db_file.exists():
+        print(
+            "no hay jardín todavía. Siémbralo con 'keepgarden garden seed'.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    market = MarketSpec(
+        venue=cfg.market.venue, symbol=cfg.primary_symbol,
+        timeframe=cfg.market.timeframe,
+    )
+    velas, _ = _candles_for(cfg, market)
+    if velas.empty:
+        print(
+            f"no hay velas de {market.symbol} en caché. Descárgalas con "
+            f"'keepgarden data backfill'.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    db, repos = _open_garden(cfg, create=False)
+    try:
+        incubadora = Incubator(
+            cfg=cfg, candles=velas, catalog=catalog, repo=repos.incubation
+        )
+        split = incubadora.split
+        print(f"\nvelas {len(velas):,}  ·  {len(split.folds)} pliegues  ·  "
+              f"holdout intocable desde la vela {split.holdout_start:,}")
+        if args.workers is not None:
+            print(f"trabajadores: {args.workers}")
+
+        poblacion = Population(
+            cfg=cfg, catalog=catalog, db=db, rng=random.Random(cfg.seed), repos=repos
+        )
+        vivos = poblacion.alive_genomes()
+        if not vivos:
+            print("el jardín está vacío.", file=sys.stderr)
+            return EXIT_ERROR
+
+        # La escala de la generación 0 se congela: sin ella el fitness es
+        # relativo a los contemporáneos, su mediana vale 0 por construcción y no
+        # hay forma de ver si el jardín mejora. Ver docs/DECISIONS.md D-019.
+        base = incubadora.measure(list(vivos.values()), members=vivos)
+        from .engine.incubator import fold_metrics_to_metrics
+
+        metricas_cero = {
+            bot: fold_metrics_to_metrics(base[g.id].fold_metrics)
+            for bot, g in vivos.items()
+        }
+        poblacion.reference = robust_reference(metricas_cero, cfg.fitness)
+
+        arranque = int(db.get_meta("current_generation") or 0)
+        print(f"\npartiendo de la generación {arranque} con {len(vivos)} bots vivos\n")
+        for i in range(int(args.generations)):
+            generacion = arranque + i + 1
+            resultado = poblacion.evolve_generation(generacion, incubadora)
+            print(resultado.summary_line)
+            for aviso in resultado.alerts:
+                print(f"           aviso: {aviso}")
+            if not poblacion.alive_ids():
+                print("el jardín se ha quedado sin bots.", file=sys.stderr)
+                return EXIT_ERROR
+
+        historia = poblacion.fitness_history
+        if len(historia) >= 2:
+            print(
+                f"\nmediana de fitness: {historia[0]:+.3f} → {historia[-1]:+.3f}"
+                f"  ({historia[-1] - historia[0]:+.3f})"
+            )
+        print("\nresumen: keepgarden garden status")
+        return EXIT_OK
+    finally:
+        db.close()
 
 
 def cmd_run(args: argparse.Namespace) -> int:
