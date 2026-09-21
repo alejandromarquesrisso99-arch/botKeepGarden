@@ -22,8 +22,6 @@ CONTRACT_MODULES = [
     "keepgarden.gardener.report",
     "keepgarden.gardener.apply",
     "keepgarden.gardener.journal",
-    "keepgarden.dashboard.api",
-    "keepgarden.dashboard.app",
 ]
 
 IMPLEMENTED_MODULES = [
@@ -60,6 +58,8 @@ IMPLEMENTED_MODULES = [
     "keepgarden.evolution.population",
     "keepgarden.storage.db",
     "keepgarden.storage.repositories",
+    "keepgarden.dashboard.api",
+    "keepgarden.dashboard.app",
 ]
 
 

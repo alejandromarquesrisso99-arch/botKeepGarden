@@ -719,8 +719,38 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
-    """Levanta el dashboard local."""
-    raise PendingMilestone("hito 6 (Dashboard)", "dashboard")
+    """Levanta el dashboard local: FastAPI + front, en sólo lectura."""
+    from dataclasses import replace
+
+    from .config import load_config
+
+    cfg = load_config(args.config)
+    if not cfg.db_file.exists():
+        print(
+            f"no hay jardín en {cfg.db_file}. Siémbralo con "
+            f"'keepgarden garden seed' y córrelo con 'keepgarden incubate'.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    if args.port is not None:
+        cfg = replace(cfg, dashboard=replace(cfg.dashboard, port=int(args.port)))
+
+    try:
+        from .dashboard.app import serve
+    except ImportError as exc:  # fastapi/uvicorn no instalados
+        print(
+            f"falta una dependencia del dashboard ({exc.name}). Instálalas con "
+            f"'pip install -e .' o '.\\scripts\\bootstrap.ps1'.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    try:
+        serve(cfg, open_browser=not args.no_browser)
+    except KeyboardInterrupt:  # pragma: no cover - salida normal con Ctrl+C
+        print("\ndashboard parado.")
+    return EXIT_OK
 
 
 def cmd_report(args: argparse.Namespace) -> int:
