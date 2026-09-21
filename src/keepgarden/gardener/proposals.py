@@ -18,8 +18,9 @@ qué espera que pase no está diagnosticando: está adivinando.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ..types import BotId, IdeaFamily, LineageId, ProposalKind, ProposalStatus
 
@@ -102,7 +103,7 @@ class Proposal:
         }
 
     @staticmethod
-    def from_dict(d: dict[str, Any]) -> "Proposal":
+    def from_dict(d: dict[str, Any]) -> Proposal:
         missing = [
             k for k in ("kind", "rationale", "expected_effect", "review_in_generations")
             if k not in d
@@ -385,15 +386,15 @@ def parse_session(payload: str | Iterable[dict[str, Any]]) -> list[Proposal]:
 
 
 __all__ = (
-    "Proposal",
-    "ProposalError",
-    "GardenSnapshot",
-    "GardenerLimits",
-    "TUNABLE_PARAMS",
     "FORBIDDEN_PARAMS",
     "GRAFTABLE_BLOCKS",
     "PAYLOAD_SHAPES",
+    "TUNABLE_PARAMS",
+    "GardenSnapshot",
+    "GardenerLimits",
+    "Proposal",
+    "ProposalError",
+    "parse_session",
     "validate_proposal",
     "validate_session",
-    "parse_session",
 )

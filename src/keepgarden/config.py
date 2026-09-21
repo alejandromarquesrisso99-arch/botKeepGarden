@@ -12,7 +12,7 @@ Reglas de este módulo:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, TypeVar
 
@@ -411,9 +411,71 @@ def validate_config(cfg: Config) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Ajustes del jardinero                                                        #
+#
+# Un TUNE del jardinero no toca config/garden.yaml: vive en la base y es
+# reversible (docs/GARDENER_PROTOCOL.md §Límites). Estas dos funciones son el
+# puente entre el YAML y esos ajustes efectivos.
+# --------------------------------------------------------------------------- #
+
+
+def current_params(cfg: Config) -> dict[str, float]:
+    """Todos los parámetros numéricos de la config, por ruta con puntos.
+
+    ``{"evolution.mutation_rate": 0.35, "garden.cull_fraction": 0.2, ...}``.
+    Es lo que necesita el validador de propuestas para saber cuánto se mueve un
+    parámetro respecto a su valor vigente.
+    """
+    salida: dict[str, float] = {}
+    for seccion, valores in cfg.to_dict().items():
+        if not isinstance(valores, dict):
+            if isinstance(valores, (int, float)) and not isinstance(valores, bool):
+                salida[str(seccion)] = float(valores)
+            continue
+        for clave, valor in valores.items():
+            if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+                salida[f"{seccion}.{clave}"] = float(valor)
+    return salida
+
+
+def apply_overrides(cfg: Config, overrides: Mapping[str, Any]) -> Config:
+    """Devuelve una copia de la config con los ajustes del jardinero aplicados.
+
+    Sólo toca rutas ``seccion.campo`` que existan y sean numéricas. Una ruta
+    desconocida se ignora en silencio a propósito: la validación de la
+    propuesta ya la rechazó, y un jardín no debe negarse a arrancar porque en
+    la base quedara un ajuste de una versión anterior del código.
+    """
+    if not overrides:
+        return cfg
+    secciones: dict[str, dict[str, Any]] = {}
+    for ruta, valor in overrides.items():
+        if "." not in str(ruta):
+            continue
+        seccion, campo = str(ruta).split(".", 1)
+        actual = getattr(cfg, seccion, None)
+        if actual is None or not hasattr(actual, campo):
+            continue
+        previo = getattr(actual, campo)
+        if isinstance(previo, bool) or not isinstance(previo, (int, float)):
+            continue
+        secciones.setdefault(seccion, {})[campo] = (
+            int(valor) if isinstance(previo, int) else float(valor)
+        )
+    if not secciones:
+        return cfg
+    nuevo = cfg
+    for seccion, campos in secciones.items():
+        nuevo = replace(nuevo, **{seccion: replace(getattr(nuevo, seccion), **campos)})
+    return nuevo
+
+
 __all__ = (
     "Config",
     "ConfigError",
+    "apply_overrides",
+    "current_params",
     "load_config",
     "validate_config",
     "find_project_root",
