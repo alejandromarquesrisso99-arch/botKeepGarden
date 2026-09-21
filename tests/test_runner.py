@@ -430,6 +430,35 @@ def test_un_bot_sin_vela_en_su_mercado_no_opera_ni_se_revalora(
         db.close()
 
 
+def test_el_jardin_guarda_copias_de_si_mismo(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """Un jardín es un archivo: copiarlo es todo el respaldo que necesita."""
+    velas = _velas(300)
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=3, velas=velas)
+    try:
+        # Generaciones cortas y una copia por generación, para no correr 1.680
+        # velas sólo por ver un archivo.
+        config = replace(
+            config,
+            garden=replace(config.garden, ticks_per_generation=60),
+            storage=replace(config.storage, snapshot_every_generations=1),
+        )
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True, max_ticks=130)
+
+        copias = sorted((config.db_file.parent / "snapshots").glob("*.db"))
+        assert len(copias) == 2, "una copia por generación cerrada"
+        assert copias[0].name.startswith("garden_")
+        # Y la copia es un jardín de verdad, no un archivo vacío.
+        copia = open_database(copias[0], read_only=True, create=False)
+        try:
+            assert copia.query_one("SELECT COUNT(*) AS n FROM bots")["n"] == 3
+        finally:
+            copia.close()
+    finally:
+        db.close()
+
+
 def test_el_jardin_deja_su_estado_marcado_al_parar(
     tmp_path: Path, cfg: Config, catalog
 ) -> None:

@@ -899,8 +899,9 @@ class DashboardAPI:
             "SELECT COUNT(*) AS n FROM events WHERE type = 'CIRCUIT_BREAKER' AND ts > ?",
             (ahora - 86_400_000,),
         )
+        # Las copias las escribe Database.snapshot en state/db/snapshots/.
         copias = sorted(
-            self.cfg.path(self.cfg.storage.db_path).parent.glob("*.db"),
+            (self.cfg.path(self.cfg.storage.db_path).parent / "snapshots").glob("*.db"),
             key=lambda r: r.name,
         )
 
@@ -922,7 +923,6 @@ class DashboardAPI:
             "snapshots": [
                 {"name": r.name, "size_mb": round(r.stat().st_size / 1e6, 2)}
                 for r in copias
-                if r.name != self.cfg.path(self.cfg.storage.db_path).name
             ][-10:],
             "alerts": self.alerts(),
             "symbols": self._symbols(),

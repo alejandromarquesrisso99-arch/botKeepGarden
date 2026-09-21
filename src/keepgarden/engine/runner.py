@@ -55,6 +55,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..genome.catalog import GeneCatalog
     from ..storage.db import Database
     from ..storage.repositories import Repositories
+    from .incubator import MultiSymbolIncubator
 
 #: Cada cuántos ticks se guarda el pulso del jardín (duración del tick) en
 #: ``garden_meta``. Es lo que alimenta el panel de salud del dashboard.
@@ -801,22 +802,17 @@ class GardenRunner:
         sigue criando, pero sólo ve las velas hasta hoy — dejarla mirar el
         futuro del replay convertiría el dry-run en una mentira optimista.
         """
-        from ..engine.incubator import Incubator, MultiSymbolIncubator
-
         assert self.repos is not None and self.population is not None
         assert self.clock is not None
 
         hasta = self._index_of(self.clock.last_processed_ts or 0) + 1
         ahora_ts = int(self.master.ts[max(0, hasta - 1)])
-        incubadoras = {}
-        for simbolo, serie in self.series.items():
-            corte = serie.index_of(ahora_ts)
-            velas = serie.candles.iloc[: corte + 1] if corte >= 0 else serie.candles
-            incubadoras[simbolo] = Incubator(
-                cfg=self.cfg, candles=velas, catalog=self.catalog,
-                repo=self.repos.incubation,
-            )
-        incubadora = MultiSymbolIncubator(incubators=incubadoras, primary=self.primary)
+        incubadora = self._incubators(ahora_ts)
+        if incubadora is None:
+            # Sin histórico para el walk-forward no se puede criar, pero el
+            # jardín no se para por eso: sigue viviendo y vuelve a intentarlo
+            # la generación que viene, con una semana más de datos.
+            return self._close_without_breeding(generation, hasta, ahora_ts)
 
         outcome = self.population.evolve_generation(
             generation, incubadora, window_metrics=self._window_metrics(), scope="live"
@@ -878,6 +874,73 @@ class GardenRunner:
         for aviso in outcome.alerts:
             self._say(f"           aviso: {aviso}")
         return outcome
+
+    def _incubators(self, ahora_ts: Timestamp) -> MultiSymbolIncubator | None:
+        """Una incubadora por mercado, cortadas en el momento actual.
+
+        Un mercado sin histórico suficiente para el walk-forward se queda
+        fuera: sus candidatos no se pueden cribar y no van a nacer. Si no queda
+        ninguno, devuelve ``None`` y esta generación no cría.
+        """
+        from ..engine.incubator import Incubator, MultiSymbolIncubator
+        from ..evaluation.walkforward import NotEnoughData
+
+        assert self.repos is not None
+        incubadoras: dict[str, Any] = {}
+        for simbolo, serie in self.series.items():
+            corte = serie.index_of(ahora_ts)
+            velas = serie.candles.iloc[: corte + 1] if corte >= 0 else serie.candles
+            incubadora = Incubator(
+                cfg=self.cfg, candles=velas, catalog=self.catalog,
+                repo=self.repos.incubation,
+            )
+            try:
+                incubadora.split  # noqa: B018 - construye y valida la partición
+            except NotEnoughData:
+                continue
+            incubadoras[simbolo] = incubadora
+        if not incubadoras:
+            return None
+        primario = self.primary if self.primary in incubadoras else next(iter(incubadoras))
+        return MultiSymbolIncubator(incubators=incubadoras, primary=primario)
+
+    def _close_without_breeding(
+        self, generation: int, hasta: int, ahora_ts: Timestamp
+    ) -> None:
+        """Cierra la generación sin criar y deja dicho por qué."""
+        assert self.repos is not None
+        capital = sum(e.portfolio.equity(e.last_price) for e in self.bots.values())
+        benchmark = self._benchmark_value(max(0, hasta - 1))
+        with self.db.transaction():
+            self.repos.generations.close(
+                generation,
+                {
+                    "ended_ts": ahora_ts,
+                    "population_size": len(self.bots),
+                    "n_ticks": len(next(iter(self.bots.values())).equity_window)
+                    if self.bots else 0,
+                    "garden_equity": capital,
+                    "benchmark_equity": benchmark,
+                    "garden_alpha": (capital / benchmark - 1.0) if benchmark > 0 else None,
+                    "garden_drawdown": self._garden_drawdown(),
+                },
+            )
+            self.repos.events.log(
+                EventType.GENERATION_CLOSED,
+                f"generación {generation} cerrada sin criar: no hay histórico "
+                f"suficiente para el walk-forward de la incubadora",
+                ts=ahora_ts, generation=generation, severity="warn",
+            )
+        for estado in self.bots.values():
+            estado.equity_window.clear()
+            estado.fees_at_window_start = estado.portfolio.total_fees
+            estado.portfolio.closed_trades.clear()
+        self._window_start_index = hasta
+        self.generation = generation
+        self._snapshot_if_due(generation)
+        self._say(
+            f"gen {generation:>3}  sin criar: la incubadora necesita más histórico"
+        )
 
     def _snapshot_if_due(self, generation: int) -> None:
         """Copia fechada de la base cada ``storage.snapshot_every_generations``.
