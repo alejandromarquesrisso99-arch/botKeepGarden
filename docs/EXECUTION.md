@@ -96,9 +96,14 @@ Independientes del fitness. Se comprueban en cada tick:
 | Breaker | Efecto |
 |---|---|
 | Drawdown del bot > `risk.hard_max_drawdown` (35%) | Poda inmediata del bot |
-| Drawdown del jardín > `risk.garden_max_drawdown` (25%) | Se pausan los nacimientos y se sube la presión de poda |
+| Drawdown del jardín > `risk.garden_max_drawdown` (25%) | Los nacimientos bajan a la mitad y la poda se duplica (`DRAWDOWN_CULL_FACTOR`), acotada por `min_population` |
 | Vela con salto > 40% o datos sospechosos | Se congela el tick, no se opera, se registra el evento |
 | Fallo del venue N veces seguidas | El jardín entra en `DEGRADED`: no opera, sigue registrando |
+
+El drawdown del jardín se mide **descontando el capital que entra y sale** con
+los nacimientos y las muertes: un bot que muere se lleva el suyo, y eso no es
+una pérdida. Medirlo en bruto hacía que cada poda disparase el freno y el
+jardín se castigara por podar (docs/DECISIONS.md D-034).
 
 ## Idempotencia
 

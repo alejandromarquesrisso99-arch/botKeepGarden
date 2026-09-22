@@ -15,6 +15,7 @@ tick simplemente no actúa en ese tick; inventar precio es inventar rentabilidad
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -62,6 +63,40 @@ if TYPE_CHECKING:  # pragma: no cover
 #: ``garden_meta``. Es lo que alimenta el panel de salud del dashboard.
 HEALTH_EVERY = 24
 
+#: Por debajo de esto, un capital se considera cero.
+EPS = 1e-9
+
+
+def flow_adjusted_peak(
+    peak: float, previous: float, flow: float, capital: float
+) -> float:
+    """Máximo histórico del jardín, descontando el capital que entra y sale.
+
+    El jardín no es una cartera de tamaño fijo: cuando un bot muere se lleva su
+    capital y cuando nace trae el suyo. Un máximo tomado sobre el capital en
+    bruto convierte cada poda en un desplome — el jardín queda castigado por
+    haber hecho bien su trabajo — y ese falso drawdown recorta los nacimientos
+    a la mitad a través de ``plan_births``. Ver docs/DECISIONS.md D-034.
+
+    La corrección es la de cualquier fondo con entradas y salidas: el pico se
+    escala por el mismo factor que el flujo, de forma que el drawdown mide sólo
+    lo que pierde el mercado. Es lo que el benchmark ya hacía con
+    ``_benchmark_units``; aquí se le da al jardín la misma vara.
+
+    ``previous`` es el capital del tick anterior, ``flow`` lo que ha entrado
+    (positivo) o salido (negativo) desde entonces, y ``capital`` el de ahora.
+    """
+    if previous <= EPS:
+        # Primer tick, o un jardín que se había quedado sin capital: empieza aquí.
+        return max(0.0, capital)
+    base = previous + flow
+    if flow and base > EPS:
+        peak *= base / previous
+    elif flow:
+        # Se ha ido todo el capital: no hay pico que arrastrar.
+        return max(0.0, capital)
+    return max(peak, capital)
+
 
 @dataclass(slots=True)
 class _Series:
@@ -96,6 +131,31 @@ class _Series:
         if pos < len(self.ts) and int(self.ts[pos]) == int(ts):
             return pos
         return -1
+
+
+def _trade_row_to_dict(fila: Any) -> dict[str, Any]:
+    """Una fila de ``trades`` en la forma que consume ``compute_metrics``.
+
+    Es el mismo diccionario que devuelve ``Portfolio._close``; si alguna vez
+    divergen, las métricas de un jardín reanudado dejarían de coincidir con
+    las de uno que no se cayó.
+    """
+    cantidad = float(fila["amount"])
+    return {
+        "entry_ts": int(fila["open_ts"]),
+        "exit_ts": int(fila["close_ts"]),
+        "side": str(fila["side"]),
+        "entry_price": float(fila["open_price"]),
+        "exit_price": float(fila["close_price"] or 0.0),
+        "amount": cantidad,
+        "notional": float(fila["open_price"]) * cantidad,
+        "gross_pnl": float(fila["pnl_gross"] or 0.0),
+        "fees": float(fila["fees"] or 0.0),
+        "pnl": float(fila["pnl_net"] or 0.0),
+        "return": float(fila["return_pct"] or 0.0),
+        "bars_held": int(fila["holding_bars"] or 0),
+        "exit_kind": str(fila["exit_kind"] or ""),
+    }
 
 
 @dataclass(slots=True)
@@ -177,6 +237,11 @@ class GardenRunner:
 
     _benchmark_units: dict[str, float] = field(default_factory=dict, repr=False)
     _garden_peak: float = 0.0
+    #: Capital del tick anterior y capital que ha entrado o salido desde
+    #: entonces (nacimientos y muertes). Los dos hacen falta para que el pico
+    #: no confunda una poda con una pérdida (D-034).
+    _last_capital: float = 0.0
+    _pending_flow: float = 0.0
     _pending_events: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _window_start_index: int = 0
     _tick_ms: float = 0.0
@@ -247,6 +312,10 @@ class GardenRunner:
             cfg=self.cfg, catalog=self.catalog, db=self.db,
             rng=random.Random(self.cfg.seed), repos=self.repos,
         )
+        # Reanudar tiene que dar el mismo jardín que no haberse caído, y eso
+        # incluye lo que la población arrastra entre generaciones: el hilo del
+        # azar, la historia del fitness y las especies (D-035).
+        self.population.restore()
         self.generation = int(self.db.get_meta("current_generation") or 0)
 
     def _load_series(self, simbolo: str) -> _Series | None:
@@ -546,6 +615,7 @@ class GardenRunner:
             ultimo_ts = int(maestro.ts[inicio - 1]) if inicio > 0 else None
         arranque = (self._index_of(ultimo_ts) + 1) if ultimo_ts is not None else 0
         self._load_population(max(0, arranque))
+        self._restore_windows(max(0, arranque))
         self._restore_benchmark(arranque)
         if ultimo and arranque > 0 and self._legacy_resume:
             self._rebuild_pending_orders(arranque - 1)
@@ -853,7 +923,11 @@ class GardenRunner:
         self.repos.bots.save_runtime(vivo)
 
         benchmark = self._benchmark_value(tick.index)
-        self._garden_peak = max(self._garden_peak, capital)
+        self._garden_peak = flow_adjusted_peak(
+            self._garden_peak, self._last_capital, self._pending_flow, capital
+        )
+        self._pending_flow = 0.0
+        self._last_capital = capital
         drawdown = (
             max(0.0, 1.0 - capital / self._garden_peak) if self._garden_peak > 0 else 0.0
         )
@@ -867,7 +941,7 @@ class GardenRunner:
             self.repos.events.raise_alert(
                 str(AlertKind.GARDEN_DRAWDOWN), ts=momento, generation=tick.generation,
                 value=drawdown, threshold=self.cfg.risk.garden_max_drawdown,
-                detail="se frenan los nacimientos y sube la poda",
+                detail="los nacimientos bajan a la mitad y la poda se duplica",
             )
         elif drawdown < self.cfg.risk.garden_max_drawdown * 0.8:
             self.repos.events.clear_alert(str(AlertKind.GARDEN_DRAWDOWN), momento)
@@ -876,7 +950,46 @@ class GardenRunner:
             self.repos.events.log_many(self._pending_events)
             self._pending_events.clear()
 
+        self._save_capital_state()
         self.db.set_meta("last_tick_ts", momento)
+
+    #: Clave de ``garden_meta`` con el pico, el capital del último tick y el
+    #: flujo pendiente. Va junta porque los tres sólo valen si son del mismo
+    #: instante: guardar uno sin los otros deja el drawdown descuadrado.
+    CAPITAL_STATE_KEY = "garden_capital_state"
+
+    def _save_capital_state(self) -> None:
+        """Vuelca el estado del capital dentro de la transacción que lo generó."""
+        self.db.set_meta(
+            self.CAPITAL_STATE_KEY,
+            json.dumps(
+                {
+                    "peak": self._garden_peak,
+                    "capital": self._last_capital,
+                    "flow": self._pending_flow,
+                }
+            ),
+        )
+
+    def _load_capital_state(self) -> bool:
+        """Recupera el pico de la ejecución anterior. Falso si no había.
+
+        El pico es estado, no un derivado: recalcularlo como el máximo de
+        ``garden_equity`` es justo el error que D-034 corrige, porque esa
+        columna incluye el capital que entró y salió con los nacimientos y las
+        muertes.
+        """
+        crudo = self.db.get_meta(self.CAPITAL_STATE_KEY)
+        if not crudo:
+            return False
+        try:
+            datos = json.loads(crudo)
+        except ValueError:
+            return False
+        self._garden_peak = float(datos.get("peak", 0.0))
+        self._last_capital = float(datos.get("capital", 0.0))
+        self._pending_flow = float(datos.get("flow", 0.0))
+        return True
 
     def _price_at(self, simbolo: str, indice_maestro: int) -> float:
         """Último cierre conocido de un mercado en ese momento del reloj."""
@@ -894,6 +1007,138 @@ class GardenRunner:
         return sum(
             unidades * self._price_at(simbolo, indice_maestro)
             for simbolo, unidades in self._benchmark_units.items()
+        )
+
+    # -- la ventana de medición, que también sobrevive al reinicio ---------- #
+
+    def _generation_bounds(self) -> list[Timestamp]:
+        """Los cierres de generación que delimitan la ventana deslizante.
+
+        Sólo se fía de ``ended_ts``: ``started_ts`` lo escribe el jardín vivo
+        con un cero y no sirve de frontera. Una generación va desde el tick
+        siguiente al cierre anterior hasta su propio cierre, que es justo como
+        las reparte ``_roll_windows``.
+        """
+        ventana = max(1, int(self.cfg.fitness.live_window_generations))
+        filas = self.db.query(
+            "SELECT ended_ts FROM generations WHERE ended_ts IS NOT NULL "
+            "ORDER BY generation DESC LIMIT ?",
+            (ventana,),
+        )
+        return sorted(int(f["ended_ts"]) for f in filas)
+
+    def _restore_windows(self, arranque: int) -> None:
+        """Reconstruye la ventana de medición de cada bot desde la base.
+
+        El fitness vivo se mide sobre varias generaciones (D-031), pero esos
+        tramos vivían sólo en memoria: al reanudar, cada bot empezaba a
+        medirse desde cero y su nota cambiaba, así que moría otro. El jardín
+        reanudado dejaba de ser el mismo jardín.
+
+        No hace falta escribirlos cada tick: la curva está en
+        ``equity_snapshots`` y las operaciones en ``trades``, una fila por bot
+        y tick. Esto las vuelve a juntar una sola vez, al arrancar — igual que
+        el dashboard, que nunca recalcula historia: la lee.
+        """
+        assert self.repos is not None
+        if not self.bots or arranque <= 0:
+            return
+
+        cierres = self._generation_bounds()
+        desde_ts = cierres[0] if cierres else -1
+        # Tramos cerrados: entre cierre y cierre. El más antiguo sólo hace de
+        # frontera inferior, para no pasarse del maxlen de la ventana.
+        tramos = [(cierres[i], cierres[i + 1]) for i in range(len(cierres) - 1)]
+        ultimo_ts = int(self.master.ts[arranque - 1])
+        abierto = (cierres[-1] if cierres else -1, ultimo_ts)
+
+        curvas: dict[BotId, list[tuple[int, float]]] = {}
+        for fila in self.db.query(
+            "SELECT bot_id, ts, equity FROM equity_snapshots WHERE ts > ? AND ts <= ? "
+            "ORDER BY bot_id, ts",
+            (desde_ts, ultimo_ts),
+        ):
+            curvas.setdefault(fila["bot_id"], []).append(
+                (int(fila["ts"]), float(fila["equity"]))
+            )
+
+        operaciones: dict[BotId, list[tuple[int, dict[str, Any]]]] = {}
+        for fila in self.db.query(
+            "SELECT * FROM trades WHERE close_ts IS NOT NULL AND close_ts > ? "
+            "AND close_ts <= ? ORDER BY bot_id, close_ts",
+            (desde_ts, ultimo_ts),
+        ):
+            operaciones.setdefault(fila["bot_id"], []).append(
+                (int(fila["close_ts"]), _trade_row_to_dict(fila))
+            )
+
+        # Comisiones acumuladas por bot en cada frontera, para que el fee drag
+        # de un tramo sea el suyo y no el de toda la vida del bot.
+        comisiones: dict[int, dict[BotId, float]] = {}
+        for corte in {t[0] for t in tramos} | {abierto[0]}:
+            comisiones[corte] = {
+                f["bot_id"]: float(f["gastado"] or 0.0)
+                for f in self.db.query(
+                    "SELECT bot_id, SUM(fee) AS gastado FROM orders "
+                    "WHERE fill_ts <= ? GROUP BY bot_id",
+                    (corte,),
+                )
+            }
+
+        for bot_id, estado in self.bots.items():
+            curva = curvas.get(bot_id, [])
+            if not curva:
+                continue
+            ops = operaciones.get(bot_id, [])
+            estado.history.clear()
+            for inicio, fin in tramos:
+                tramo = self._slice_tramo(curva, ops, inicio, fin, comisiones, bot_id)
+                if tramo is not None:
+                    estado.history.append(tramo)
+            actual = self._slice_tramo(
+                curva, ops, abierto[0], abierto[1], comisiones, bot_id
+            )
+            if actual is not None:
+                estado.equity_window = actual.equity
+                estado.window_start_index = actual.start_index
+                estado.fees_at_window_start = actual.fees_at_start
+                # La actividad de la generación en curso se cuenta sobre esto.
+                estado.portfolio.closed_trades = actual.trades
+                self._window_start_index = actual.start_index
+            else:
+                # El corte cayó justo al cerrar una generación: la siguiente no
+                # tiene todavía ni un tick, pero su contabilidad empieza aquí.
+                # Sin esto, las comisiones de toda la vida del bot se le cargan
+                # a la generación nueva y su fee drag se dispara.
+                estado.equity_window = []
+                estado.portfolio.closed_trades = []
+                estado.window_start_index = arranque
+                estado.fees_at_window_start = float(
+                    comisiones.get(int(abierto[0]), {}).get(bot_id, 0.0)
+                )
+                self._window_start_index = arranque
+
+    def _slice_tramo(
+        self,
+        curva: Sequence[tuple[int, float]],
+        ops: Sequence[tuple[int, dict[str, Any]]],
+        inicio: Timestamp,
+        fin: Timestamp,
+        comisiones: Mapping[int, Mapping[BotId, float]],
+        bot_id: BotId,
+    ) -> _Tramo | None:
+        """El trozo de curva y de operaciones que cae en ``(inicio, fin]``."""
+        puntos = [(ts, eq) for ts, eq in curva if inicio < ts <= fin]
+        if not puntos:
+            return None
+        indice = self._index_of(puntos[0][0])
+        if indice < 0:
+            return None
+        return _Tramo(
+            start_index=indice,
+            equity=[eq for _, eq in puntos],
+            trades=[op for ts, op in ops if inicio < ts <= fin],
+            fees_at_start=float(comisiones.get(int(inicio), {}).get(bot_id, 0.0)),
         )
 
     def _restore_benchmark(self, arranque: int) -> None:
@@ -930,18 +1175,55 @@ class GardenRunner:
                 }
                 for estado in self.bots.values():
                     estado.benchmark_units *= factor
-            pico = self.db.query_one("SELECT MAX(garden_equity) AS pico FROM garden_equity")
-            self._garden_peak = float((pico or {"pico": 0.0})["pico"] or 0.0)
+            if not self._load_capital_state():
+                # Jardín anterior a D-034: su pico está contaminado por la poda
+                # y los flujos de entonces no se pueden reconstruir. Se refunda
+                # aquí, con el capital que hay, y queda dicho en el diario.
+                self._refound_peak(indice)
         else:
-            self._garden_peak = sum(
-                e.portfolio.equity(self._price_at(e.symbol, indice))
-                for e in self.bots.values()
-            )
+            self._garden_peak = self._current_capital(indice)
+            self._last_capital = self._garden_peak
+            self._pending_flow = 0.0
+
+    def _current_capital(self, indice: int) -> float:
+        return sum(
+            e.portfolio.equity(self._price_at(e.symbol, indice))
+            for e in self.bots.values()
+        )
+
+    def _refound_peak(self, indice: int) -> None:
+        """Reinicia el máximo del jardín y deja constancia de por qué.
+
+        Sólo ocurre una vez, la primera que un jardín anterior a D-034 se abre
+        con este código. Cambiar de medida en silencio sería peor que el bug:
+        el drawdown daría un salto que nadie sabría explicar.
+        """
+        assert self.repos is not None
+        self._garden_peak = self._current_capital(indice)
+        self._last_capital = self._garden_peak
+        self._pending_flow = 0.0
+        self.repos.events.log(
+            EventType.CIRCUIT_BREAKER,
+            "el máximo del jardín se refunda: la medida anterior contaba el "
+            "capital de los bots podados como pérdida (docs/DECISIONS.md D-034)",
+            ts=int(self.master.ts[max(0, min(indice, len(self.master.ts) - 1))]),
+            generation=self.generation,
+            severity="warn",
+            payload={"peak": self._garden_peak},
+        )
 
     def _ticks_in_current_generation(self) -> int:
+        """Cuántos ticks lleva vividos la generación que sigue abierta.
+
+        Se cuenta desde el último cierre, no por el número de generación de la
+        última fila: si el jardín se paró justo al cerrar una, esa fila
+        pertenece a una generación ya completa y contarla dejaba el contador
+        lleno, de forma que el primer tick tras reanudar cerraba otra
+        generación en el acto (docs/DECISIONS.md D-035).
+        """
         fila = self.db.query_one(
-            "SELECT COUNT(*) AS n FROM garden_equity WHERE generation = "
-            "(SELECT generation FROM garden_equity ORDER BY ts DESC LIMIT 1)"
+            "SELECT COUNT(*) AS n FROM garden_equity WHERE ts > COALESCE("
+            "(SELECT MAX(ended_ts) FROM generations WHERE ended_ts IS NOT NULL), 0)"
         )
         return int(fila["n"] or 0) if fila else 0
 
@@ -988,6 +1270,7 @@ class GardenRunner:
                     # de la vela que cerró la generación, no se abandonan.
                     self._close_all(estado, tick, estado.last_price)
                     self.repos.bots.drop_runtime(bot_id)
+                    self._pending_flow -= estado.portfolio.equity(estado.last_price)
                     self._benchmark_units[estado.symbol] = max(
                         0.0,
                         self._benchmark_units.get(estado.symbol, 0.0)
@@ -1006,6 +1289,8 @@ class GardenRunner:
                         + estado.benchmark_units
                     )
                 self.bots[bot_id] = estado
+                # Y el capital del recién nacido entra.
+                self._pending_flow += estado.portfolio.equity(estado.last_price)
 
             capital = sum(e.portfolio.equity(e.last_price) for e in self.bots.values())
             benchmark = self._benchmark_value(max(0, hasta - 1))
@@ -1024,6 +1309,10 @@ class GardenRunner:
             if self._pending_events:
                 self.repos.events.log_many(self._pending_events)
                 self._pending_events.clear()
+            # El capital que acaban de mover los nacimientos y las muertes se
+            # persiste con ellos: si el proceso muere aquí, al reanudar el
+            # jardín confundiría a sus muertos con una pérdida (D-034).
+            self._save_capital_state()
 
         self._roll_windows(hasta)
         self.generation = generation
@@ -1222,6 +1511,8 @@ class GardenRunner:
             return
         estado.broker.cancel_all()
         self.repos.bots.drop_runtime(bot_id)
+        # Su capital sale del jardín: es un flujo, no una pérdida (D-034).
+        self._pending_flow -= estado.portfolio.equity(estado.last_price)
         self._benchmark_units[estado.symbol] = max(
             0.0, self._benchmark_units.get(estado.symbol, 0.0) - estado.benchmark_units
         )

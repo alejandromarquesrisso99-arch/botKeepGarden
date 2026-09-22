@@ -14,6 +14,12 @@ from .speciation import Species
 #: jardín se llena de hijos de un solo bot en dos generaciones.
 MAX_TIMES_AS_PARENT = 3
 
+#: Cuánto se multiplica ``garden.cull_fraction`` mientras el jardín está por
+#: encima de ``risk.garden_max_drawdown``. Es el reverso exacto del recorte de
+#: nacimientos de ``plan_births``: cuando el ecosistema pierde, entra la mitad
+#: y sale el doble. Ver docs/EXECUTION.md §Circuit breakers y DECISIONS D-034.
+DRAWDOWN_CULL_FACTOR = 2
+
 #: Operadores que reparten los nacimientos de una cosecha.
 BREED_OPERATORS: tuple[BreedOperator, ...] = (
     BreedOperator.MUTATE,
@@ -94,6 +100,8 @@ def select_deaths(
     pareto: set[BotId],
     clones: Sequence[tuple[BotId, BotId]],
     cfg: Config,
+    *,
+    garden_drawdown: float = 0.0,
 ) -> dict[BotId, DeathCause]:
     """Decide quién muere y por qué.
 
@@ -110,6 +118,12 @@ def select_deaths(
     jardinero —los tres llegan en ``protected`` y ``pareto``— y los que no
     llegan a ``min_age_generations``, salvo por drawdown, que no perdona a
     nadie.
+
+    Mientras ``garden_drawdown`` supere ``risk.garden_max_drawdown``, la
+    fracción podada se multiplica por ``DRAWDOWN_CULL_FACTOR``: es la otra
+    mitad del breaker del jardín, la que acompaña al recorte de nacimientos de
+    ``plan_births``. Aprieta, no arrasa — el suelo de población y los exentos
+    siguen mandando sobre él.
 
     No deja la población por debajo de ``cfg.garden.min_population``: si la poda
     lo haría, se indulta empezando por los de mejor fitness entre los condenados.
@@ -151,7 +165,10 @@ def select_deaths(
         and b not in exento
         and int(ages.get(b, 0)) >= cfg.garden.min_age_generations
     ]
-    cuantos = int(len(fitness) * cfg.garden.cull_fraction)
+    presion = cfg.garden.cull_fraction
+    if float(garden_drawdown) > cfg.risk.garden_max_drawdown:
+        presion = min(1.0, presion * DRAWDOWN_CULL_FACTOR)
+    cuantos = int(len(fitness) * presion)
     if cuantos > 0 and juzgables:
         peores = sorted(juzgables, key=lambda b: (fitness[b], b))[:cuantos]
         for bot in peores:
@@ -276,6 +293,7 @@ def plan_births(
 
 __all__ = (
     "BREED_OPERATORS",
+    "DRAWDOWN_CULL_FACTOR",
     "MAX_TIMES_AS_PARENT",
     "blocked_families",
     "select_parents",

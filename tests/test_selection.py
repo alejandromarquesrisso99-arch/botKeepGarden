@@ -8,6 +8,7 @@ import pytest
 
 from keepgarden.evolution.selection import (
     BREED_OPERATORS,
+    DRAWDOWN_CULL_FACTOR,
     MAX_TIMES_AS_PARENT,
     blocked_families,
     plan_births,
@@ -164,6 +165,66 @@ def test_el_suelo_de_poblacion_indulta_por_arriba(cfg) -> None:
     vivos = set(fitness) - set(muertes)
     mejor = max(fitness, key=lambda b: fitness[b])
     assert mejor in vivos
+
+
+def test_el_drawdown_del_jardin_aprieta_la_poda(cfg) -> None:
+    """El breaker del jardín de docs/EXECUTION.md §Circuit breakers.
+
+    Cuando el ecosistema entero está perdiendo, se recorta por los dos lados:
+    la mitad de nacimientos —eso ya lo hacía ``plan_births``— y el doble de
+    poda, que es la mitad que faltaba.
+    """
+    fitness = _poblacion(60)
+    edades = {b: 9 for b in fitness}
+    tranquilo = select_deaths(fitness, edades, {}, {}, set(), set(), [], cfg)
+    sufriendo = select_deaths(
+        fitness, edades, {}, {}, set(), set(), [], cfg,
+        garden_drawdown=cfg.risk.garden_max_drawdown + 0.01,
+    )
+    assert len(sufriendo) > len(tranquilo)
+    assert len(sufriendo) == len(tranquilo) * DRAWDOWN_CULL_FACTOR
+
+
+def test_la_poda_apretada_muere_por_abajo(cfg) -> None:
+    """Apretar la poda mata a más, pero sigue matando a los peores."""
+    fitness = _poblacion(60)
+    edades = {b: 9 for b in fitness}
+    muertes = select_deaths(
+        fitness, edades, {}, {}, set(), set(), [], cfg,
+        garden_drawdown=cfg.risk.garden_max_drawdown + 0.01,
+    )
+    vivos = set(fitness) - set(muertes)
+    assert max(fitness[b] for b in muertes) < min(fitness[b] for b in vivos)
+
+
+def test_la_poda_apretada_respeta_el_suelo_y_a_los_protegidos(cfg) -> None:
+    """El breaker aprieta, no arrasa: el suelo de población y los protegidos
+    mandan sobre él."""
+    n = cfg.garden.min_population + 3
+    fitness = _poblacion(n)
+    edades = {b: 9 for b in fitness}
+    muertes = select_deaths(
+        fitness, edades, {}, {}, {"b0"}, set(), [], cfg,
+        garden_drawdown=cfg.risk.garden_max_drawdown + 0.01,
+    )
+    assert n - len(muertes) >= cfg.garden.min_population
+    assert "b0" not in muertes
+
+
+def test_sin_drawdown_del_jardin_la_poda_es_la_de_siempre(cfg) -> None:
+    """Que el parámetro exista no puede cambiar el jardín de nadie que no esté
+    en drawdown: un cambio silencioso de dinámica es lo peor que puede pasar."""
+    fitness = _poblacion(60)
+    edades = {b: 9 for b in fitness}
+    sin_parametro = select_deaths(fitness, edades, {}, {}, set(), set(), [], cfg)
+    con_cero = select_deaths(
+        fitness, edades, {}, {}, set(), set(), [], cfg, garden_drawdown=0.0
+    )
+    justo_debajo = select_deaths(
+        fitness, edades, {}, {}, set(), set(), [], cfg,
+        garden_drawdown=cfg.risk.garden_max_drawdown,
+    )
+    assert sin_parametro == con_cero == justo_debajo
 
 
 def test_el_suelo_de_poblacion_no_indulta_un_drawdown(cfg) -> None:

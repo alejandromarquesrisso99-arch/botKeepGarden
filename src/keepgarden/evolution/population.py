@@ -6,6 +6,7 @@ donde mirar para entender qué pasa cuando se cierra una generación.
 
 from __future__ import annotations
 
+import json
 import random
 import statistics
 import time
@@ -64,6 +65,13 @@ if TYPE_CHECKING:  # pragma: no cover
 #: operador. Un cruce puede salir irreparable y una mutación puede quedarse en
 #: clon; insistir un poco es más barato que perder el hueco.
 BREED_ATTEMPTS = 6
+
+#: Clave de ``garden_meta`` donde vive el estado del generador aleatorio de la
+#: evolución. Sin ella, un jardín reanudado vuelve al principio del flujo de
+#: azar y cría hijos distintos de los que habría criado sin morirse: el
+#: invariante 7 del CLAUDE.md sólo se cumple mientras el proceso no se caiga.
+#: Ver docs/DECISIONS.md D-035.
+RNG_STATE_KEY = "evolution_rng_state"
 
 
 @dataclass(slots=True)
@@ -217,6 +225,9 @@ class Population:
             members=genomas,
         )
         cuotas_familia = family_shares(genomas)
+        # El breaker del jardín recorta por los dos lados a la vez, así que se
+        # lee una sola vez: nacimientos a la mitad y poda al doble.
+        drawdown_jardin = self._garden_drawdown()
 
         # Los nacimientos de la generación se reparten primero entre especies
         # (quién se reproduce) y después entre operadores (cómo).
@@ -227,7 +238,7 @@ class Population:
             self.cfg,
             diversity=diversidad,
             family_shares={str(k): v for k, v in cuotas_familia.items()},
-            garden_drawdown=self._garden_drawdown(),
+            garden_drawdown=drawdown_jardin,
         )
 
         elite = self._elite(escalares)
@@ -250,6 +261,20 @@ class Population:
         aprobados = [r for r in resultados if r.passed]
         outcome.discarded = len(resultados) - len(aprobados)
 
+        # Se calculan aquí, antes de persistir, para que la fila de la
+        # generación guarde exactamente el número que el jardín imprime y que
+        # alimenta la tasa de mutación adaptativa. Había dos medianas
+        # distintas —``statistics.median`` en memoria y un percentil por rango
+        # en la base—, así que el log de la CLI y el dashboard no decían lo
+        # mismo de la misma generación (docs/DECISIONS.md D-035).
+        definidos = sorted(f.total for f in fitness.values() if f.is_defined)
+        outcome.n_species = len(especies)
+        outcome.genetic_diversity = diversidad
+        outcome.fitness_best = definidos[-1] if definidos else 0.0
+        outcome.fitness_median = (
+            float(statistics.median(definidos)) if definidos else 0.0
+        )
+
         with self.db.transaction():
             outcome.births = self.admit(
                 [(r.genome, parentescos.get(r.genome.id, ())) for r in aprobados],
@@ -269,6 +294,7 @@ class Population:
                 pareto=frente,
                 clones=detect_clones(genomas, self.cfg, self.catalog),
                 cfg=self.cfg,
+                garden_drawdown=drawdown_jardin,
             )
             self.cull(muertes, generation)
             outcome.deaths = muertes
@@ -277,14 +303,10 @@ class Population:
                 generation, genomas, metricas, fitness, especies, frente,
                 diversidad, cuotas_familia, outcome, scope, activity,
             )
+            # El azar consumido por esta generación se guarda con ella: si el
+            # proceso muere aquí, la siguiente sigue el flujo donde se quedó.
+            self.save_rng_state()
 
-        definidos = [v for v in escalares.values() if v == v]
-        outcome.n_species = len(especies)
-        outcome.genetic_diversity = diversidad
-        outcome.fitness_best = max(definidos) if definidos else 0.0
-        outcome.fitness_median = (
-            float(statistics.median(definidos)) if definidos else 0.0
-        )
         outcome.alerts = self._check_alerts(generation, diversidad, cuotas_familia)
         self.fitness_history.append(outcome.fitness_median)
         self._species = especies
@@ -301,6 +323,101 @@ class Population:
         """
         hueco = max(0, self.cfg.garden.max_population - poblacion)
         return min(self.cfg.garden.births_per_generation, hueco)
+
+    # -- el azar, que también es estado ------------------------------------ #
+
+    def save_rng_state(self) -> None:
+        """Persiste el flujo de azar consumido hasta aquí."""
+        version, interno, gauss = self.rng.getstate()
+        self.db.set_meta(
+            RNG_STATE_KEY, json.dumps([version, list(interno), gauss])
+        )
+
+    def restore(self) -> None:
+        """Devuelve a la población el estado que traía de la ejecución anterior.
+
+        Una generación no se decide sólo con lo que está vivo ahora mismo: la
+        tasa de mutación mira la historia del fitness, las especies conservan
+        sus representantes y su orden, y el azar sigue un hilo. Todo eso vivía
+        únicamente en memoria, así que un jardín reanudado criaba distinto de
+        uno que no se hubiera caído — y el invariante 7 del CLAUDE.md dice que
+        no puede pasar. Ver docs/DECISIONS.md D-035.
+
+        Es idempotente y silenciosa: sobre un jardín recién sembrado no hay
+        nada que restaurar y no cambia nada.
+        """
+        self.restore_rng()
+        self._restore_fitness_history()
+        self._restore_species()
+
+    def _restore_fitness_history(self) -> None:
+        """La mediana de fitness de cada generación que llegó a criar.
+
+        Sólo cuentan las que pasaron por ``evolve_generation``: una generación
+        cerrada sin criar —la incubadora sin histórico suficiente— nunca
+        añadió nada a la lista, y su ``fitness_median`` quedó en NULL.
+        """
+        self.fitness_history = [
+            float(fila["fitness_median"])
+            for fila in self.db.query(
+                "SELECT fitness_median FROM generations "
+                "WHERE ended_ts IS NOT NULL AND fitness_median IS NOT NULL "
+                "ORDER BY generation"
+            )
+        ]
+
+    def _restore_species(self) -> None:
+        """Las especies de la última generación, con sus miembros y su orden.
+
+        ``speciate`` recorre las heredadas en orden y mete cada bot en la
+        primera cuyo representante le queda cerca, así que el orden es parte
+        del estado y por eso ``species.ordinal`` existe. Los miembros salen de
+        ``bots.species_id``; los que ya no estén vivos los descarta
+        ``speciate`` sola.
+        """
+        assert self.repos is not None
+        ultima = self.db.query_one(
+            "SELECT MAX(generation) AS g FROM species WHERE representative_id IS NOT NULL"
+        )
+        if ultima is None or ultima["g"] is None:
+            return
+        miembros: dict[str, list[BotId]] = {}
+        for fila in self.db.query(
+            "SELECT bot_id, species_id FROM bots WHERE species_id IS NOT NULL "
+            "ORDER BY bot_id"
+        ):
+            miembros.setdefault(str(fila["species_id"]), []).append(fila["bot_id"])
+        self._species = [
+            Species(
+                species_id=str(fila["species_id"]),
+                representative=fila["representative_id"],
+                members=miembros.get(str(fila["species_id"]), []),
+            )
+            for fila in self.db.query(
+                "SELECT species_id, representative_id FROM species "
+                "WHERE generation = ? ORDER BY ordinal, species_id",
+                (int(ultima["g"]),),
+            )
+        ]
+
+    def restore_rng(self) -> bool:
+        """Devuelve el generador a donde lo dejó la ejecución anterior.
+
+        Falso si el jardín no tiene estado guardado —recién sembrado, o
+        anterior a D-035—, en cuyo caso se sigue con la semilla de la
+        configuración, que es el comportamiento de siempre.
+        """
+        crudo = self.db.get_meta(RNG_STATE_KEY)
+        if not crudo:
+            return False
+        try:
+            version, interno, gauss = json.loads(crudo)
+            self.rng.setstate((int(version), tuple(int(v) for v in interno), gauss))
+        except (ValueError, TypeError, IndexError):
+            # Un estado ilegible no puede tumbar el jardín: se sigue con la
+            # semilla y se pierde el hilo del azar, nada más.
+            return False
+        return True
 
     def _garden_drawdown(self) -> float:
         assert self.repos is not None
@@ -723,8 +840,7 @@ class Population:
 
         self.repos.generations.record_species(generation, especies)
 
-        definidos = [f.total for f in fitness.values() if f.is_defined]
-        definidos.sort()
+        definidos = sorted(f.total for f in fitness.values() if f.is_defined)
 
         def percentil(q: float) -> float | None:
             if not definidos:
@@ -743,7 +859,9 @@ class Population:
                 "oldest_bot_age": max(edades.values(), default=0),
                 "fitness_best": definidos[-1] if definidos else None,
                 "fitness_p75": percentil(0.75),
-                "fitness_median": percentil(0.50),
+                # El mismo número que imprime el jardín y que gobierna la tasa
+                # de mutación: una sola mediana, no dos.
+                "fitness_median": outcome.fitness_median if definidos else None,
                 "fitness_p25": percentil(0.25),
                 "fitness_worst": definidos[0] if definidos else None,
                 "genetic_diversity": diversidad,

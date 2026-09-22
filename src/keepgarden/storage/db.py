@@ -13,8 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+#: Columnas añadidas a tablas que ya existían, con la versión de esquema que
+#: las introdujo. ``schema.sql`` se vuelve a pasar entero en cada migración,
+#: pero ``CREATE TABLE IF NOT EXISTS`` no toca una tabla que ya está: una
+#: columna nueva necesita su ``ALTER TABLE``. Cada entrada es
+#: ``(versión, tabla, columna, declaración)`` y se aplica una sola vez.
+COLUMN_MIGRATIONS: tuple[tuple[int, str, str, str], ...] = (
+    (3, "species", "ordinal", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 class SchemaTooNew(RuntimeError):
@@ -72,9 +81,12 @@ class Database:
         Las tablas y los índices de ``schema.sql`` se crean con ``IF NOT
         EXISTS``, así que volver a pasar el script entero es una migración
         aditiva idempotente: un jardín viejo gana las tablas nuevas sin perder
-        una fila. Lo que no cubre es quitar o cambiar columnas; el día que haga
-        falta, cada cambio destructivo necesita su script en ``migrations/`` y
-        se aplica aquí en orden, antes de volver a pasar el esquema.
+        una fila. Lo que eso **no** hace es tocar una tabla que ya existe, así
+        que las columnas nuevas se añaden aparte, desde ``COLUMN_MIGRATIONS``.
+
+        Sigue sin cubrir quitar o cambiar una columna. El día que haga falta,
+        cada cambio destructivo necesita su script en ``migrations/`` y se
+        aplica aquí en orden, antes de volver a pasar el esquema.
         """
         if self.read_only or not self._has_table("garden_meta"):
             return
@@ -86,8 +98,19 @@ class Database:
                 f"tocar este jardín."
             )
         if actual < SCHEMA_VERSION:
-            self.connect().executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            con = self.connect()
+            con.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            for version, tabla, columna, declaracion in COLUMN_MIGRATIONS:
+                if actual < version and not self._has_column(tabla, columna):
+                    con.execute(
+                        f"ALTER TABLE {tabla} ADD COLUMN {columna} {declaracion}"
+                    )
             self.set_meta("schema_version", str(SCHEMA_VERSION))
+
+    def _has_column(self, table: str, column: str) -> bool:
+        return any(
+            row["name"] == column for row in self.query(f"PRAGMA table_info({table})")
+        )
 
     def _has_table(self, name: str) -> bool:
         fila = self.query_one(
@@ -199,4 +222,11 @@ def open_database(path: Path | str, *, read_only: bool = False, create: bool = T
     return db
 
 
-__all__ = ("Database", "SchemaTooNew", "SCHEMA_VERSION", "SCHEMA_PATH", "open_database")
+__all__ = (
+    "COLUMN_MIGRATIONS",
+    "Database",
+    "SCHEMA_PATH",
+    "SCHEMA_VERSION",
+    "SchemaTooNew",
+    "open_database",
+)

@@ -336,6 +336,11 @@ CREATE TABLE IF NOT EXISTS species (
     shared_fitness      REAL,
     breeding_quota      INTEGER NOT NULL DEFAULT 0,
     mean_age            REAL,
+    -- Posición en la lista con la que se especió esa generación. `speciate`
+    -- recorre las especies heredadas en orden y se queda con la primera que
+    -- encaja, así que sin el orden un jardín reanudado agrupa distinto.
+    -- Ver docs/DECISIONS.md D-035.
+    ordinal             INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (species_id, generation)
 );
 

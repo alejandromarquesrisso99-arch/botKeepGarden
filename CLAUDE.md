@@ -111,6 +111,8 @@ pero cambiar su forma rompe el resto: si necesitas hacerlo, anótalo en
 ✅ evaluation/robustness.py, multi-símbolo, snapshots, panel de salud  ← hito 8
    (`keepgarden robustness`, `garden seed --symbols`)
 
+```
+
 No queda ningún contrato con `NotImplementedError`. Lo único pendiente del
 roadmap es lo que necesita tiempo de reloj y red: 48 horas contra Binance y 30
 días seguidos de jardín.
@@ -119,7 +121,13 @@ El fitness vivo se mide sobre una ventana deslizante de varias generaciones
 (D-030 y **D-031**): es lo que hace que el jardín pueda comparar a sus bots con
 generaciones de una semana. Si tocas `_window_metrics` en `engine/runner.py`,
 lee esas dos entradas antes.
-```
+
+**Reanudar tiene que dar el mismo jardín que no haberse caído** (invariante 7).
+Eso no sale gratis: hay estado vivo que se persiste (`bot_runtime`, el pico del
+jardín, el azar de la evolución) y estado que se reconstruye al arrancar desde
+`equity_snapshots`, `trades` y `species`. Si añades algo que `Population` o
+`_BotState` arrastren entre generaciones, tiene que sobrevivir al reinicio o
+romperás el invariante en silencio: **D-033, D-034 y D-035**.
 
 ## Orden de trabajo
 
@@ -133,6 +141,14 @@ debería terminar con tests que pasan y un comando de CLI que hace algo visible.
   financiera (métricas, fitness, PnL, sizing). Son los sitios donde un error
   silencioso cuesta meses.
 - **Un commit por unidad conceptual.** Mensajes en español, imperativo.
+  La excepción, aprendida a base de romperlo: cuando dos unidades salen de la
+  misma investigación y viven en las mismas funciones, separarlas a posteriori
+  significa reconstruir a mano un estado intermedio que nunca existió. Eso
+  produce un commit que parece verde y no lo está, que es peor que un historial
+  poco fino. En ese caso, **un solo commit con un mensaje que nombre las dos
+  unidades y sus entradas de `DECISIONS.md`**. La prueba de si separar o no:
+  ¿puedo dejar el árbol en el primer commit y pasar la suite entera sin tocar
+  nada más? Si no, va junto.
 - **No añadas dependencias** sin anotarlas en `docs/DECISIONS.md` con el motivo.
   El stack objetivo es: `ccxt`, `pandas`, `numpy`, `pydantic`, `fastapi`,
   `uvicorn`, `pyyaml`, `typer`, `rich`, `pyarrow`. Nada de frameworks de backtest

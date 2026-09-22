@@ -339,18 +339,24 @@ class GenerationRepository:
         )
 
     def record_species(self, generation: int, species: Sequence[Any]) -> None:
+        """Guarda las especies de una generación, **en su orden**.
+
+        El orden no es decorativo: ``speciate`` recorre las especies heredadas
+        y mete cada bot en la primera cuyo representante le queda cerca. Sin
+        él, un jardín reanudado agrupa distinto (docs/DECISIONS.md D-035).
+        """
         self.db.executemany(
             "INSERT OR REPLACE INTO species (species_id, generation, representative_id, "
-            "dominant_family, size, mean_fitness, shared_fitness, breeding_quota, mean_age) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "dominant_family, size, mean_fitness, shared_fitness, breeding_quota, "
+            "mean_age, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     sp.species_id, int(generation), sp.representative,
                     str(sp.dominant_family) if sp.dominant_family else None,
                     len(sp.members), sp.mean_fitness, sp.shared_fitness,
-                    sp.breeding_quota, sp.mean_age,
+                    sp.breeding_quota, sp.mean_age, orden,
                 )
-                for sp in species
+                for orden, sp in enumerate(species)
             ],
         )
 

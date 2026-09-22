@@ -684,3 +684,120 @@ sus posiciones abiertas: con 60 bots, decenas de KB. El test de reanudación ya
 no elige el corte a ojo: lo busca sobre una operación abierta y falla si no
 encuentra ninguna, porque un test de reanudación que no reanuda nada no prueba
 nada.
+
+---
+
+### D-034 · 2026-09-22 · El drawdown del jardín no cuenta a sus muertos como pérdidas
+
+**Contexto.** Mirando una tirada real de 20 generaciones apareció esto:
+
+```
+  gen  candidatos  drawdown   ¿freno activo? (umbral 0.25)
+    4      12        0.180     no
+    5       6        0.676     SÍ   ← mueren 31 bots
+   ...      6        0.69x     SÍ   (16 generaciones seguidas)
+```
+
+En la generación 4 murieron 31 bots —26 de ellos por no haber operado nunca—
+y el capital del jardín cayó de 50.088 a 19.689. **No se perdió un céntimo:**
+el capital se fue con los muertos. Pero `_garden_peak` era un máximo histórico
+sobre el capital en bruto que nunca bajaba, así que el drawdown saltó al 67 % y
+se quedó ahí. Y como `plan_births` recorta los nacimientos a la mitad cuando el
+drawdown supera `risk.garden_max_drawdown`, **el jardín se castigó a sí mismo
+por podar** durante el resto de la simulación.
+
+Lo irónico es que el benchmark ya estaba bien: `_benchmark_units` resta las
+unidades del bot que muere, precisamente para que la comparación signifique
+algo. La cartera espejo se ajustaba al capital vivo y el jardín no.
+
+**Decisión.** `flow_adjusted_peak` escala el pico por el mismo factor que el
+flujo de capital, que es como se mide el retorno de cualquier fondo con
+entradas y salidas. Un bot que muere resta su equity; uno que nace suma su
+capital inicial. El drawdown pasa a medir sólo lo que pierde el mercado.
+
+El pico es **estado**, no un derivado: se guarda en `garden_meta` junto al
+capital del último tick y el flujo pendiente, los tres en la misma clave porque
+sólo valen si son del mismo instante. Un jardín anterior a esta decisión
+refunda su pico al abrirse —sus flujos no se pueden reconstruir— y lo deja
+escrito como evento, porque cambiar de medida en silencio sería peor que el bug.
+
+**La otra mitad del breaker.** `docs/EXECUTION.md` prometía *"se pausan los
+nacimientos y se sube la presión de poda"*. Lo primero estaba implementado —a
+la mitad, no pausado—; lo segundo no existía en ninguna parte. Ahora
+`select_deaths` multiplica `cull_fraction` por `DRAWDOWN_CULL_FACTOR` (2)
+mientras el breaker esté activo: entra la mitad y sale el doble. Sigue acotado
+por `min_population` y por los exentos, y el texto de los docs pasa a decir lo
+que el código hace de verdad.
+
+Arreglar la medida era condición previa para implementar esto: apretar la poda
+con un drawdown que sube *por podar* habría sido una espiral.
+
+---
+
+### D-035 · 2026-09-22 · Reanudar el jardín tiene que dar el mismo jardín
+
+**Contexto.** El invariante 7 del CLAUDE.md dice que dos ejecuciones con la
+misma semilla y los mismos datos dan el mismo jardín. No se cumplía en cuanto
+el proceso se caía y volvía. El test que lo vigilaba usaba
+`ticks_per_generation = 10_000`: **nunca cerraba una generación**, así que
+comprobaba las operaciones pero jamás la evolución.
+
+Cortando una tirada en un cierre de generación aparecieron cuatro roturas
+independientes, todas de la misma familia —estado vivo que sólo existía en
+memoria—:
+
+| Qué se perdía | Consecuencia |
+|---|---|
+| El contador de ticks de la generación en curso | Contaba las filas de la última generación de `garden_equity`, que si el corte caía en un cierre ya estaba completa: el primer tick tras reanudar cerraba otra generación de golpe y el jardín iba adelantado para siempre |
+| La ventana de medición del fitness (D-031) | Cada bot volvía a medirse desde cero: `n_trades` pasaba de 11 a 8, el fitness cambiaba y moría otro |
+| El hilo del azar de la evolución | `Population` se construía con `random.Random(cfg.seed)` en cada arranque: otros padres, otras mutaciones |
+| Las especies y la historia del fitness | Las especies pierden sus representantes **y su orden** —`speciate` se queda con la primera que encaja—, y sin `fitness_history` la tasa de mutación adaptativa arranca en frío |
+
+**Decisión.** Lo que ya está en la base se **reconstruye** al arrancar, no se
+duplica: la ventana de medición sale de `equity_snapshots` y `trades`, que
+tienen una fila por bot y tick, y las especies de la tabla `species`. Es el
+mismo principio que el dashboard, que nunca recalcula historia: la lee. Sólo se
+persiste lo que no se puede deducir — el estado del generador aleatorio, y el
+orden de las especies en una columna `ordinal` nueva.
+
+De paso salió una inconsistencia que no tenía que ver con reanudar: había **dos
+medianas de fitness distintas**, `statistics.median` en memoria y un percentil
+por rango al persistir, así que el log de la CLI y el dashboard enseñaban
+números distintos de la misma generación. Ahora se calcula una sola vez, antes
+de persistir, y es la que se guarda, se imprime y alimenta la tasa de mutación.
+
+**Esquema.** `SCHEMA_VERSION` pasa a 3. Volver a pasar `schema.sql` crea tablas
+nuevas pero no toca una tabla que ya existe, así que las columnas nuevas se
+aplican desde `COLUMN_MIGRATIONS` con su `ALTER TABLE`, una vez y sólo si
+faltan. Sigue sin cubrir quitar o cambiar una columna.
+
+**Consecuencias.** Matar el jardín y relanzarlo produce un censo idéntico: los
+mismos bots, nacidos y muertos en las mismas generaciones y por las mismas
+causas. Sin esto, cualquier decisión del jardinero era irreproducible en cuanto
+el proceso se hubiera reiniciado una vez, y el proyecto entero se apoya en
+poder auditar por qué el jardín hizo lo que hizo.
+
+---
+
+### D-036 · 2026-09-22 · Cuestión abierta: el jardín vivo no congela su escala de fitness
+
+**Contexto.** `Population.reference` guarda la escala robusta de la generación
+0, y su docstring explica por qué importa: *"sin ella el fitness es relativo a
+los contemporáneos y su mediana vale 0 por construcción, así que no hay forma
+de saber si el jardín mejora o sólo se reordena"*.
+
+La pone **un solo sitio**: `cmd_incubate`. El jardín vivo nunca la fija, y
+tampoco se persiste, así que ni siquiera sobrevive entre invocaciones de
+`incubate`. En la práctica el fitness vivo se normaliza contra los
+contemporáneos de cada generación.
+
+**Decisión.** Pendiente, y a propósito. Arreglarlo no es cerrar un bug sino
+elegir qué significa el fitness de un jardín que lleva meses corriendo: contra
+qué escala se congela (¿la generación 0? ¿una ventana móvil larga? ¿el
+holdout?), y qué pasa cuando esa escala envejece y deja de describir el
+mercado. Es una decisión de diseño de Alex, no de ingeniería.
+
+Mientras tanto conviene leer la mediana de fitness como **un ranking interno de
+cada generación**, no como una medida de si el jardín mejora con el tiempo. Lo
+que sí es comparable entre generaciones es la curva de capital y el alfa contra
+el benchmark.

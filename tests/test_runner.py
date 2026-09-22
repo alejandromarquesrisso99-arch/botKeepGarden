@@ -19,7 +19,7 @@ import pytest
 from keepgarden.config import Config
 from keepgarden.engine.backtest import run_backtest
 from keepgarden.engine.clock import MarketClock, Tick
-from keepgarden.engine.runner import GardenRunner
+from keepgarden.engine.runner import GardenRunner, flow_adjusted_peak
 from keepgarden.genome.random_genome import random_population
 from keepgarden.genome.schema import MarketSpec
 from keepgarden.storage.db import open_database
@@ -305,6 +305,253 @@ def test_reanudar_a_mitad_de_una_operacion_no_la_cambia(
 
     partido = _tirada(tmp_path / "partido", cfg, catalog, velas, corte=corte)
     assert partido == entero
+
+
+# --------------------------------------------------------------------------- #
+# El capital del jardín entra y sale: el pico tiene que enterarse              #
+# --------------------------------------------------------------------------- #
+
+
+def _dd(pico: float, capital: float) -> float:
+    return max(0.0, 1.0 - capital / pico) if pico > 0 else 0.0
+
+
+def test_sin_flujo_el_pico_es_el_maximo_de_siempre() -> None:
+    assert flow_adjusted_peak(100.0, 100.0, 0.0, 120.0) == 120.0   # sube
+    assert flow_adjusted_peak(120.0, 120.0, 0.0, 90.0) == 120.0    # baja, el pico aguanta
+
+
+def test_el_primer_tick_fija_el_pico() -> None:
+    """Sin capital previo no hay nada que escalar: el jardín empieza aquí."""
+    assert flow_adjusted_peak(0.0, 0.0, 0.0, 60_000.0) == 60_000.0
+
+
+def test_morirse_media_poblacion_no_es_un_drawdown() -> None:
+    """El bug que encontramos mirando una tirada real.
+
+    60 bots con 1.000 cada uno; mueren 30 y se llevan su capital. No se ha
+    perdido un céntimo: el drawdown tiene que seguir en cero.
+    """
+    pico = flow_adjusted_peak(60_000.0, 60_000.0, -30_000.0, 30_000.0)
+    assert _dd(pico, 30_000.0) == pytest.approx(0.0)
+
+
+def test_nacer_tampoco_es_un_drawdown() -> None:
+    """Y al revés: meter capital nuevo no puede maquillar una caída."""
+    # el jardín venía cayendo un 25 %
+    pico, capital = 40_000.0, 30_000.0
+    assert _dd(pico, capital) == pytest.approx(0.25)
+    # nacen 5 bots con 1.000 cada uno
+    nuevo = flow_adjusted_peak(pico, capital, 5_000.0, 35_000.0)
+    assert _dd(nuevo, 35_000.0) == pytest.approx(0.25)
+
+
+def test_la_perdida_de_verdad_si_aparece() -> None:
+    """Lo que no puede hacer el arreglo es esconder una pérdida real."""
+    pico = flow_adjusted_peak(60_000.0, 60_000.0, 0.0, 48_000.0)
+    assert _dd(pico, 48_000.0) == pytest.approx(0.20)
+
+
+def test_muerte_y_perdida_a_la_vez_deja_ver_solo_la_perdida() -> None:
+    """Mueren 30 bots (sale la mitad del capital) y los 30 que quedan pierden
+    un 20 %. El drawdown tiene que ser 20 %, no 60 %."""
+    pico = flow_adjusted_peak(60_000.0, 60_000.0, -30_000.0, 24_000.0)
+    assert _dd(pico, 24_000.0) == pytest.approx(0.20)
+
+
+def test_si_se_va_todo_el_capital_no_revienta() -> None:
+    """Jardín extinguido: ni división por cero ni un drawdown inventado."""
+    pico = flow_adjusted_peak(60_000.0, 60_000.0, -60_000.0, 0.0)
+    assert pico >= 0.0
+    assert _dd(pico, 0.0) == pytest.approx(0.0)
+
+
+def test_la_poda_masiva_no_dispara_el_freno_del_jardin(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El mismo bug, de punta a punta y sobre datos persistidos.
+
+    Se busca el tick en el que más bots desaparecen y se comprueba que el
+    drawdown del jardín no empeora más de lo que realmente perdieron los que
+    siguen vivos. Antes de D-034 aquí había un salto de 0.165 a 0.672 sin que
+    nadie hubiera perdido un céntimo, y ese salto recortaba los nacimientos a
+    la mitad durante el resto de la simulación.
+    """
+    velas = _velas(1400)
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=24, velas=velas)
+    config = _incubadora_pequeña(
+        replace(config, garden=replace(config.garden, ticks_per_generation=120))
+    )
+    try:
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
+
+        curva = repos.db.query(
+            "SELECT ts, n_alive, garden_drawdown FROM garden_equity ORDER BY ts"
+        )
+        # El tick en el que más bots desaparecen de golpe.
+        caidas = [
+            (curva[i - 1]["n_alive"] - curva[i]["n_alive"], i)
+            for i in range(1, len(curva))
+        ]
+        bajada, i = max(caidas)
+        assert bajada > 0, "en esta tirada no muere nadie: el test no prueba nada"
+
+        antes, despues = curva[i - 1], curva[i]
+        # Lo que de verdad perdieron los que siguen vivos en los dos ticks.
+        def capital(ts: int, ids: set[str]) -> float:
+            filas = repos.db.query(
+                "SELECT bot_id, equity FROM equity_snapshots WHERE ts = ?", (int(ts),)
+            )
+            return sum(f["equity"] for f in filas if f["bot_id"] in ids)
+
+        ids_despues = {
+            f["bot_id"] for f in repos.db.query(
+                "SELECT bot_id FROM equity_snapshots WHERE ts = ?", (int(despues["ts"]),)
+            )
+        }
+        cap_antes = capital(antes["ts"], ids_despues)
+        cap_despues = capital(despues["ts"], ids_despues)
+        perdida = max(0.0, 1.0 - cap_despues / cap_antes) if cap_antes > 0 else 0.0
+
+        empeora = despues["garden_drawdown"] - antes["garden_drawdown"]
+        assert empeora <= perdida + 1e-6, (
+            f"el drawdown del jardín empeora {empeora:.3f} cuando los "
+            f"supervivientes sólo perdieron {perdida:.3f}: la poda se está "
+            f"contando como pérdida"
+        )
+    finally:
+        db.close()
+
+
+def _curva_dd(carpeta: Path, cfg: Config, catalog, velas, corte: int | None):
+    """Corre el jardín, opcionalmente matándolo en el tick ``corte``, y
+    devuelve la curva de drawdown que ha quedado escrita."""
+    config, db, repos, _ = _sembrar(carpeta, cfg, catalog, n_bots=26, velas=velas)
+    config = _incubadora_pequeña(
+        replace(config, garden=replace(config.garden, ticks_per_generation=120))
+    )
+    try:
+        if corte is not None:
+            GardenRunner(cfg=config, db=db, verbose=False).run(
+                dry_run=True, max_ticks=corte
+            )
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
+        return [
+            (f["ts"], round(f["garden_drawdown"], 9)) for f in repos.db.query(
+                "SELECT ts, garden_drawdown FROM garden_equity ORDER BY ts")
+        ], repos.db.query_one(
+            "SELECT COUNT(*) AS n FROM bots WHERE death_cause IS NOT NULL")["n"]
+    finally:
+        db.close()
+
+
+def test_reanudar_al_cerrar_generacion_no_cierra_otra_de_golpe(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El contador de la generación en curso cuenta ticks, no filas.
+
+    ``_ticks_in_current_generation`` miraba cuántas filas tenía la última
+    generación de ``garden_equity``. Si el jardín se para justo al cerrar una,
+    esa última generación ya estaba completa, así que al reanudar el contador
+    arrancaba lleno y el primer tick cerraba otra generación en el acto. El
+    jardín reanudado iba adelantado para siempre.
+    """
+    velas = _velas(600)
+    config, db, repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=6, velas=velas)
+    config = replace(config, garden=replace(config.garden, ticks_per_generation=120))
+    try:
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True, max_ticks=120)
+        cerradas = repos.db.query_one(
+            "SELECT COUNT(*) AS n FROM generations WHERE ended_ts IS NOT NULL")["n"]
+
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True, max_ticks=1)
+        despues = repos.db.query_one(
+            "SELECT COUNT(*) AS n FROM generations WHERE ended_ts IS NOT NULL")["n"]
+        assert despues == cerradas, (
+            "un solo tick tras reanudar ha cerrado una generación entera"
+        )
+    finally:
+        db.close()
+
+
+def _censo(carpeta: Path, cfg: Config, catalog, velas, corte: int | None):
+    """Corre el jardín, opcionalmente partido, y devuelve quién vivió y murió."""
+    config, db, repos, _ = _sembrar(carpeta, cfg, catalog, n_bots=26, velas=velas)
+    config = _incubadora_pequeña(
+        replace(config, garden=replace(config.garden, ticks_per_generation=120))
+    )
+    try:
+        if corte is not None:
+            GardenRunner(cfg=config, db=db, verbose=False).run(
+                dry_run=True, max_ticks=corte
+            )
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True)
+        return [
+            tuple(f) for f in repos.db.query(
+                "SELECT bot_id, born_generation, died_generation, death_cause "
+                "FROM bots ORDER BY born_generation, bot_id"
+            )
+        ]
+    finally:
+        db.close()
+
+
+def test_reanudar_no_cambia_a_quien_nace(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """Invariante 7 del CLAUDE.md, en el punto donde se rompía.
+
+    El generador aleatorio de la evolución se sembraba de nuevo en cada
+    arranque, así que una generación criada tras un reinicio veía otro flujo de
+    azar: otros padres, otras mutaciones, otro jardín. El test de reanudación
+    que ya existía no lo veía porque nunca cerraba una generación.
+    """
+    velas = _velas(700)
+    seguido = _censo(tmp_path / "entero", cfg, catalog, velas, None)
+    assert any(f[1] > 0 for f in seguido), "no nace nadie: el test no prueba nada"
+
+    partido = _censo(tmp_path / "partido", cfg, catalog, velas, 120)
+    assert partido == seguido
+
+
+def test_reanudar_despues_de_criar_sigue_el_mismo_hilo_de_azar(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El corte cae cuando ya se ha criado, que es cuando el azar importa.
+
+    ``Population`` se construye con ``random.Random(cfg.seed)`` en cada
+    arranque. Si el flujo de azar no se guarda, la generación que se cría tras
+    un reinicio vuelve al principio del flujo: otros padres, otras mutaciones,
+    otro jardín. Ver docs/DECISIONS.md D-035.
+    """
+    velas = _velas(900)
+    seguido = _censo(tmp_path / "entero", cfg, catalog, velas, None)
+    criados = [f for f in seguido if f[1] > 0]
+    assert criados, "no cría nadie: el test no prueba nada"
+
+    # 600 ticks = cinco generaciones de 120: ya ha habido cosechas antes del corte.
+    partido = _censo(tmp_path / "partido", cfg, catalog, velas, 600)
+    assert partido == seguido
+
+
+def test_el_pico_del_jardin_sobrevive_al_reinicio(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El pico es estado, no un derivado de ``garden_equity``.
+
+    El corte cae **justo al cerrar una generación**, que es el único momento en
+    el que hay capital entrando y saliendo. Si ese flujo no se persiste con la
+    generación, al reanudar el jardín confunde a sus muertos con una pérdida y
+    la curva de drawdown se parte en dos.
+    """
+    velas = _velas(700)
+    seguido, muertos = _curva_dd(tmp_path / "entero", cfg, catalog, velas, None)
+    assert muertos, "en esta tirada no muere nadie: el test no prueba nada"
+
+    # 120 velas por generación: el corte cae en el primer cierre de generación.
+    troceado, _ = _curva_dd(tmp_path / "partido", cfg, catalog, velas, 120)
+
+    assert troceado == seguido
 
 
 def test_un_tick_reprocesado_no_duplica_ordenes(

@@ -157,6 +157,38 @@ def test_un_jardin_viejo_gana_las_tablas_nuevas_al_abrirlo(tmp_path: Path) -> No
         puesto_al_dia.close()
 
 
+def test_un_jardin_viejo_gana_las_columnas_nuevas(tmp_path: Path) -> None:
+    """Volver a pasar ``schema.sql`` crea tablas, no columnas.
+
+    Una columna añadida a una tabla que ya existe necesita su ``ALTER TABLE``,
+    o el jardín viejo sube de versión sin la columna y el código que la da por
+    hecha falla al primer INSERT.
+    """
+    ruta = tmp_path / "viejo.db"
+    base = open_database(ruta)
+    base.execute("ALTER TABLE species DROP COLUMN ordinal")   # así era el esquema 2
+    base.set_meta("schema_version", "2")
+    base.close()
+
+    puesto_al_dia = open_database(ruta, create=False)
+    try:
+        columnas = {
+            f["name"] for f in puesto_al_dia.query("PRAGMA table_info(species)")
+        }
+        assert "ordinal" in columnas
+        assert puesto_al_dia.get_meta("schema_version") == str(SCHEMA_VERSION)
+        # Y la columna sirve de verdad, no está sólo declarada.
+        puesto_al_dia.execute(
+            "INSERT INTO species (species_id, generation, size, ordinal) "
+            "VALUES ('sp_x', 1, 0, 7)"
+        )
+        assert puesto_al_dia.query_one(
+            "SELECT ordinal FROM species WHERE species_id = 'sp_x'"
+        )["ordinal"] == 7
+    finally:
+        puesto_al_dia.close()
+
+
 def test_una_base_de_esquema_futuro_no_se_abre(tmp_path: Path) -> None:
     ruta = tmp_path / "futuro.db"
     base = open_database(ruta)
