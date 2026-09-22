@@ -983,7 +983,12 @@ render.generations = async function () {
         markLine: suelo == null ? undefined : {
           silent: true, symbol: 'none',
           lineStyle: { color: css('--bad') || '#d4645a', type: 'dashed' },
-          label: { color: MUTED, formatter: 'suelo' },
+          // Dentro del área: pegada al borde se recortaba a "su", porque el
+          // margen derecho del grid son 20 px.
+          label: {
+            color: MUTED, position: 'insideEndTop',
+            formatter: `suelo ${suelo}`,
+          },
           data: [{ yAxis: suelo }],
         },
       },
@@ -1105,7 +1110,9 @@ render.species = async function () {
     corr.matrix.forEach((fila, i) => fila.forEach((v, j) => datos.push([j, i, v])));
     chart('chart-corr', {
       ...BASE_OPTION,
-      grid: { left: 110, right: 24, top: 20, bottom: 90 },
+      // El margen derecho deja sitio a la escala de color: en horizontal y
+      // abajo se montaba sobre las etiquetas rotadas del eje X.
+      grid: { left: 110, right: 92, top: 20, bottom: 90 },
       tooltip: {
         ...BASE_OPTION.tooltip,
         formatter: (p) =>
@@ -1117,8 +1124,9 @@ render.species = async function () {
       yAxis: { ...BASE_AXIS, type: 'category', data: nombres,
                axisLabel: { color: MUTED, fontSize: 10 } },
       visualMap: {
-        min: -1, max: 1, calculable: true, orient: 'horizontal',
-        left: 'center', bottom: 0, textStyle: { color: MUTED },
+        min: -1, max: 1, calculable: true, orient: 'vertical',
+        right: 8, top: 'middle', itemHeight: 140,
+        textStyle: { color: MUTED },
         inRange: { color: ['#4a8fd4', '#171b18', '#d4645a'] },
       },
       series: [{ type: 'heatmap', data: datos, progressive: 2000 }],
