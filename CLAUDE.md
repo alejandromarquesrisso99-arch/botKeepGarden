@@ -165,6 +165,9 @@ debería terminar con tests que pasan y un comando de CLI que hace algo visible.
 # preparar el entorno (una vez)
 .\scripts\bootstrap.ps1
 
+# poner la aplicación en el escritorio (una vez, opcional)
+.\scripts\instalar.bat
+
 # descargar histórico
 keepgarden data backfill --symbol BTC/USDT --timeframe 1h --since 2019-01-01
 

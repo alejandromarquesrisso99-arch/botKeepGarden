@@ -206,11 +206,24 @@ Opciones útiles del dry-run:
 ## 4b. La aplicación: todo junto y en vivo
 
 Si lo único que quieres es **verlo funcionar**, no hace falta abrir dos
-ventanas. Doble clic en:
+ventanas.
+
+**Ponlo en el escritorio, una sola vez:**
 
 ```
-scripts\jardin.bat
+scripts\instalar.bat
 ```
+
+Doble clic y te deja dos iconos:
+
+| Icono | Qué hace |
+|---|---|
+| **botKeepGarden** | el jardín de verdad: una vela por hora |
+| **botKeepGarden (acelerado)** | recorre histórico acelerado, para verlo evolucionar en minutos |
+
+Funciona aunque OneDrive te haya movido el escritorio, y no hace falta tocar la
+política de ejecución de PowerShell. Si prefieres no instalar nada, el
+lanzador está siempre en `scripts\jardin.bat`.
 
 O desde la consola:
 
