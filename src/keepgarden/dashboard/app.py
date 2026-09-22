@@ -117,6 +117,10 @@ def create_app(cfg: Config) -> FastAPI:
 
     # -- portada ----------------------------------------------------------- #
 
+    @app.get("/api/pulse")
+    def pulse() -> dict[str, Any]:
+        return api_del_hilo().pulse()
+
     @app.get("/api/garden/summary")
     def garden_summary() -> Any:
         return api_del_hilo().garden_summary()
@@ -239,6 +243,33 @@ def create_app(cfg: Config) -> FastAPI:
     return app
 
 
+def serve_background(cfg: Config, *, open_browser: bool | None = None) -> Any:
+    """Levanta el visor en un hilo y devuelve el servidor, para poder pararlo.
+
+    Lo usa ``keepgarden app``, donde el motor se queda en el hilo principal.
+    Tiene que ser así y no al revés: la conexión SQLite del jardín pertenece al
+    hilo que la abrió, y Ctrl+C sólo llega al hilo principal. Por eso hay que
+    desactivar los manejadores de señal de uvicorn, que dan error fuera de él.
+    """
+    import uvicorn
+
+    servidor = uvicorn.Server(
+        uvicorn.Config(
+            create_app(cfg), host=cfg.dashboard.host, port=cfg.dashboard.port,
+            log_level="warning",
+        )
+    )
+    servidor.install_signal_handlers = lambda: None    # type: ignore[method-assign]
+    threading.Thread(target=servidor.run, name="visor", daemon=True).start()
+
+    url = f"http://{cfg.dashboard.host}:{cfg.dashboard.port}"
+    abrir = cfg.dashboard.open_browser if open_browser is None else open_browser
+    if abrir:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    print(f"visor en {url}")
+    return servidor
+
+
 def serve(cfg: Config, *, open_browser: bool | None = None) -> None:
     """Levanta uvicorn en ``cfg.dashboard.host:port``."""
     import uvicorn
@@ -258,4 +289,4 @@ def serve(cfg: Config, *, open_browser: bool | None = None) -> None:
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
-__all__ = ("STATIC_DIR", "create_app", "serve")
+__all__ = ("STATIC_DIR", "create_app", "serve", "serve_background")

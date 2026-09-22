@@ -148,6 +148,22 @@ class DashboardAPI:
 
     # -- portada ----------------------------------------------------------- #
 
+    def pulse(self) -> dict[str, Any]:
+        """Lo mínimo para saber si el jardín se ha movido desde la última mirada.
+
+        El front lo consulta cada pocos segundos para refrescarse solo, así que
+        tiene que ser barato: tres claves de ``garden_meta`` y un recuento. Un
+        ``garden_summary`` cada tres segundos sí se notaría, porque recorre
+        bots, generaciones y alertas.
+        """
+        ultimo = self._db.get_meta("last_tick_ts")
+        return {
+            "last_tick_ts": int(ultimo) if ultimo else None,
+            "generation": self.current_generation(),
+            "n_alive": self.repos.bots.count_alive(),
+            "status": str(self._db.get_meta("status") or "STOPPED"),
+        }
+
     def garden_summary(self) -> dict[str, Any]:
         """Tarjetas de la portada: capital, alfa, población, especies,
         diversidad, generación, edad del jardín, alertas, sesión pendiente."""

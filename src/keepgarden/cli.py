@@ -853,6 +853,98 @@ def cmd_run(args: argparse.Namespace) -> int:
         db.close()
 
 
+def cmd_app(args: argparse.Namespace) -> int:
+    """La aplicación: el motor y el visor a la vez, en una sola ventana.
+
+    El **motor se queda en el hilo principal** y el visor se va a un hilo. Al
+    revés no funciona, y las dos razones importan:
+
+    * la conexión SQLite del jardín pertenece al hilo que la abrió, así que el
+      motor tiene que correr donde se abrió la base;
+    * Ctrl+C sólo llega al hilo principal, y un error del motor en un hilo
+      secundario se quedaría guardado hasta el cierre: una app que parece viva
+      y no está haciendo nada, que es el peor fallo posible.
+
+    El visor abre sus propias conexiones en sólo lectura, una por hilo (D-024).
+    Un escritor y los lectores que hagan falta es exactamente para lo que está
+    el modo WAL. Ver docs/DECISIONS.md D-038.
+    """
+    import time
+    from dataclasses import replace
+
+    from .config import load_config
+    from .engine.runner import GardenRunner
+
+    cfg = load_config(args.config)
+    if not cfg.db_file.exists():
+        print(
+            f"no hay jardín en {cfg.db_file}. Siémbralo con "
+            f"'keepgarden garden seed' antes de abrir la aplicación.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    if args.port is not None:
+        cfg = replace(cfg, dashboard=replace(cfg.dashboard, port=int(args.port)))
+
+    try:
+        from .dashboard.app import serve_background
+    except ImportError as exc:
+        print(
+            f"falta una dependencia del dashboard ({exc.name}). Instálalas con "
+            f"'pip install -e .' o '.\\scripts\\bootstrap.ps1'.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    db, repos = _open_garden(cfg, create=False)
+    servidor = None
+    try:
+        if not repos.bots.count_alive():
+            print("el jardín está vacío: no hay nada que correr.", file=sys.stderr)
+            return EXIT_ERROR
+
+        runner = GardenRunner(cfg=cfg, db=db)
+        runner.prepare()
+        arranque = None
+        if args.dry_run and runner.candles is not None:
+            arranque = max(0, len(runner.candles) - int(args.bars))
+
+        modo = (
+            f"dry-run a {args.speed or 'máxima'} velas/s" if args.dry_run else "vivo"
+        )
+        print(
+            f"jardín {cfg.db_file}\n"
+            f"modo {modo}  ·  {repos.bots.count_alive()} bots vivos  ·  "
+            f"generación {runner.generation}"
+        )
+        servidor = serve_background(cfg, open_browser=not args.no_browser)
+        print("Ctrl+C para cerrar la aplicación.\n")
+
+        runner.run(dry_run=args.dry_run, speed=args.speed, start_index=arranque)
+        print(
+            f"\n{runner.ticks_done} velas procesadas  ·  "
+            f"generación {runner.generation}  ·  "
+            f"{repos.bots.count_alive()} bots vivos"
+        )
+        if args.dry_run:
+            print("el histórico se ha acabado; el visor sigue abierto (Ctrl+C para salir).")
+            try:
+                while True:
+                    time.sleep(1.0)
+            except KeyboardInterrupt:
+                pass
+        return EXIT_OK
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        return EXIT_OK
+    finally:
+        if servidor is not None:
+            servidor.should_exit = True
+        db.close()
+
+
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Levanta el dashboard local: FastAPI + front, en sólo lectura."""
     from dataclasses import replace
@@ -1225,6 +1317,22 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=cmd_run)
 
     # -- dashboard --------------------------------------------------------- #
+    app = sub.add_parser(
+        "app", help="la aplicación: corre el jardín y lo enseña en vivo"
+    )
+    app.add_argument("--dry-run", action="store_true", help="recorre histórico como si fuera vivo")
+    app.add_argument(
+        "--speed", type=float, default=20.0,
+        help="velas/segundo en dry-run; 0 = máxima (por defecto 20, para poder mirarlo)",
+    )
+    app.add_argument(
+        "--bars", type=int, default=DRY_RUN_BARS,
+        help=f"velas de histórico que recorre un dry-run nuevo (por defecto {DRY_RUN_BARS})",
+    )
+    app.add_argument("--port", type=int, default=None)
+    app.add_argument("--no-browser", action="store_true")
+    app.set_defaults(func=cmd_app)
+
     dash = sub.add_parser("dashboard", help="abre el dashboard local")
     dash.add_argument("--port", type=int, default=None)
     dash.add_argument("--no-browser", action="store_true")

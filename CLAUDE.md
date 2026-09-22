@@ -174,11 +174,13 @@ keepgarden garden seed --size 60
 # correr una cosecha de incubadora (evolución rápida sobre histórico)
 keepgarden incubate --generations 20
 
-# arrancar el jardín vivo (bucle continuo)
-keepgarden run
+# la aplicación: motor + visor en una ventana, refrescándose solo
+keepgarden app                    # o doble clic en scripts\jardin.bat
+keepgarden app --dry-run          # histórico acelerado, para verlo evolucionar
 
-# dashboard
-keepgarden dashboard
+# o por separado, si se prefiere
+keepgarden run                    # sólo el motor
+keepgarden dashboard              # sólo el visor (sólo lectura)
 
 # informe de generación para el jardinero
 keepgarden report --generation latest

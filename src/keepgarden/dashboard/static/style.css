@@ -118,3 +118,24 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .neg { color: var(--bad); }
 .bar { height: 6px; background: #22281f; border-radius: 3px; overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--fam-trend); }
+
+/* Indicador de refresco automático. Vive en la barra superior porque hay que
+   poder saber de un vistazo si lo que se está mirando es de ahora o está
+   congelado: un dashboard que miente sobre su propia frescura es peor que uno
+   que no se refresca. */
+.live {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  margin-left: auto;
+  padding: 3px 11px;
+  white-space: nowrap;
+}
+
+.live:hover { border-color: var(--text); color: var(--text); }
+
+.live.on { border-color: var(--ok, #6bbf6b); color: var(--ok, #6bbf6b); }

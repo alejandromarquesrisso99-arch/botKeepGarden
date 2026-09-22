@@ -9,6 +9,7 @@ significa nada y el dry-run no valida nada.
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -552,6 +553,111 @@ def test_el_pico_del_jardin_sobrevive_al_reinicio(
     troceado, _ = _curva_dd(tmp_path / "partido", cfg, catalog, velas, 120)
 
     assert troceado == seguido
+
+
+def test_el_jardin_se_puede_parar_desde_fuera(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """``keepgarden app`` corre el motor en un hilo y el visor en el principal.
+
+    Para que cerrar la app no tarde hasta una hora —lo que dura un sleep entre
+    velas en vivo—, el runner acepta un ``stop_event``: lo mira en cada vuelta
+    del bucle y además lo usa como reloj, así que la espera se corta en cuanto
+    se pide parar.
+    """
+    import threading
+
+    velas = _velas(400)
+    config, db, _repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=4, velas=velas)
+    parar = threading.Event()
+    try:
+        runner = GardenRunner(cfg=config, db=db, verbose=False, stop_event=parar)
+        parar.set()                       # ya pedido antes de arrancar
+        runner.run(dry_run=True)
+        assert runner.ticks_done == 0, "no debería haber procesado ninguna vela"
+
+        # Y sin la señal corre con normalidad.
+        otro = GardenRunner(cfg=config, db=db, verbose=False)
+        otro.run(dry_run=True, max_ticks=5)
+        assert otro.ticks_done == 5
+    finally:
+        db.close()
+
+
+def test_la_espera_entre_velas_se_corta_al_parar(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El reloj espera sobre el evento, no sobre el reloj de pared.
+
+    El motor corre en el hilo que abrió su base —SQLite ata las conexiones a
+    su hilo— y quien pide parar es otro. Con una pausa de 5 s por vela, si la
+    espera no fuera interrumpible la primera ya se comería el presupuesto.
+    """
+    import threading
+
+    velas = _velas(300)
+    config, db, _repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=3, velas=velas)
+    parar = threading.Event()
+    try:
+        runner = GardenRunner(cfg=config, db=db, verbose=False, stop_event=parar)
+        aviso = threading.Timer(0.5, parar.set)   # se pide parar desde fuera
+        aviso.start()
+        empezado = time.perf_counter()
+        runner.run(dry_run=True, speed=0.2)       # 5 s por vela
+        tardado = time.perf_counter() - empezado
+        aviso.cancel()
+        assert tardado < 4.0, f"ha esperado la pausa entera ({tardado:.1f} s)"
+        assert runner.ticks_done >= 1, "no ha llegado a procesar ninguna vela"
+    finally:
+        db.close()
+
+
+def test_el_visor_puede_leer_mientras_el_motor_escribe(
+    tmp_path: Path, cfg: Config, catalog
+) -> None:
+    """El contrato de ``keepgarden app``: un escritor y lectores a la vez.
+
+    Es para lo que está el modo WAL, pero hay dos formas de romperlo y las dos
+    han pasado ya en este proyecto: compartir una conexión entre hilos —SQLite
+    las ata al hilo que las abrió— y dejar que el lector bloquee al escritor.
+    Aquí el motor corre donde abrió su base y el lector abre la suya.
+    """
+    import threading
+
+    from keepgarden.dashboard.api import DashboardAPI
+
+    velas = _velas(400)
+    config, db, _repos, _ = _sembrar(tmp_path, cfg, catalog, n_bots=6, velas=velas)
+    ruta = config.db_file
+    leidos: list[dict] = []
+    fallos: list[BaseException] = []
+    parar = threading.Event()
+
+    def lector() -> None:
+        propia = open_database(ruta, read_only=True, create=False)
+        try:
+            while not parar.is_set():
+                leidos.append(DashboardAPI(cfg=config, repos=Repositories.open(propia)).pulse())
+        except BaseException as exc:      # se comprueba abajo
+            fallos.append(exc)
+        finally:
+            propia.close()
+
+    hilo = threading.Thread(target=lector, daemon=True)
+    try:
+        hilo.start()
+        GardenRunner(cfg=config, db=db, verbose=False).run(dry_run=True, max_ticks=120)
+        parar.set()
+        hilo.join(timeout=15)
+
+        assert not fallos, f"el visor ha fallado leyendo en paralelo: {fallos[0]!r}"
+        assert leidos, "el lector no ha llegado a leer nada"
+        # Y ha visto avanzar el jardín, no una foto congelada.
+        vistos = {p["last_tick_ts"] for p in leidos}
+        assert len(vistos) > 1, "el visor no ha visto moverse al jardín"
+    finally:
+        parar.set()
+        db.close()
 
 
 def test_un_tick_reprocesado_no_duplica_ordenes(

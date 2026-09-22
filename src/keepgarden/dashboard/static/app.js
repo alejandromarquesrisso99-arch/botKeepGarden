@@ -65,7 +65,14 @@ const state = {
   filters: { family: '', status: '', lineage: '' },
   charts: {},
   loaded: {},
+  live: true,        // refrescarse solo mientras el jardín se mueva
+  pulse: null,       // firma del último pulso visto
 };
+
+//: Cada cuánto se pregunta al jardín si se ha movido. Tres segundos es
+//: bastante para una vela por hora en vivo y para un dry-run a 20 velas/s, y
+//: el endpoint /api/pulse son tres claves de garden_meta y un recuento.
+const PULSO_MS = 3000;
 
 // --------------------------------------------------------------------------- //
 // Utilidades                                                                   //
@@ -1483,9 +1490,63 @@ window.addEventListener('resize', () => {
   Object.values(state.charts).forEach((c) => c && c.resize());
 });
 
-async function arrancar() {
+/** ¿Se ha movido el jardín desde la última mirada? */
+async function latido() {
+  const p = await api('/pulse');
+  return {
+    firma: `${p.last_tick_ts}|${p.generation}|${p.n_alive}`,
+    estado: p.status,
+  };
+}
+
+/** Refresca la vista activa sin tirar lo que el usuario está mirando.
+ *
+ * Las cachés del cliente se vacían porque el pasado sí ha cambiado: hay
+ * generaciones nuevas. El slider de la genealogía sólo salta al presente si ya
+ * estaba en el presente; si lo has movido atrás para mirar algo, se queda.
+ */
+async function refrescar() {
+  const anterior = state.maxGen;
+  state.graphs = {};
+  state.generations = null;
+  if (state.until != null && state.until === anterior) state.until = null;
+  await activar(state.view);
+  // La portada ya pide el resumen al redibujarse, así que se reaprovecha: es
+  // la consulta más cara del visor —recorre bots, generaciones y alertas— y
+  // pedirla dos veces cada tres segundos se nota. Las demás vistas sí la
+  // necesitan, porque la cabecera vive fuera de la vista.
+  await cabecera(state.view === 'garden' ? state.summary : null);
+}
+
+function pintarIndicador() {
+  const el = document.getElementById('live');
+  if (!el) return;
+  el.textContent = state.live ? '● en vivo' : '⏸ pausado';
+  el.className = state.live ? 'live on' : 'live';
+  el.title = state.live
+    ? 'el visor se refresca solo; pulsa para congelarlo'
+    : 'congelado; pulsa para volver a seguir al jardín';
+}
+
+async function vigilar() {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, PULSO_MS));
+    // Congelado a mano, reproduciendo la genealogía o con una ficha abierta:
+    // redibujar por debajo sería quitarle al usuario lo que está mirando.
+    if (!state.live || state.playing || state.view === 'bot') continue;
+    try {
+      const { firma } = await latido();
+      if (state.pulse !== null && firma !== state.pulse) await refrescar();
+      state.pulse = firma;
+    } catch {
+      // Un pulso fallido no es nada: el jardín puede estar cerrando.
+    }
+  }
+}
+
+async function cabecera(conocido) {
   try {
-    const s = (state.summary = await api('/garden/summary'));
+    const s = conocido || (state.summary = await api('/garden/summary'));
     document.getElementById('status').innerHTML =
       `generación ${s.generation} · ${s.n_alive} vivos · ${s.n_species} especies` +
       (s.alerts.length ? ` · <span style="color:var(--warn)">${s.alerts.length} alerta(s)</span>` : '') +
@@ -1493,7 +1554,26 @@ async function arrancar() {
   } catch (err) {
     document.getElementById('status').textContent = `sin conexión con el jardín: ${err.message}`;
   }
+}
+
+async function arrancar() {
+  await cabecera();
+  try {
+    state.pulse = (await latido()).firma;
+  } catch {
+    state.live = false;
+  }
+  const boton = document.getElementById('live');
+  if (boton) {
+    boton.addEventListener('click', () => {
+      state.live = !state.live;
+      pintarIndicador();
+      if (state.live) refrescar();
+    });
+  }
+  pintarIndicador();
   activar('garden');
+  vigilar();
 }
 
 arrancar();

@@ -834,3 +834,57 @@ mucho 0,62 del carril, para que quede pasillo entre familias.
 flechas de descendencia se leen por familia y los carriles no se mueven al
 reproducir. La colocación se memoriza por grafo, porque se recalcula en cada
 redibujado del resaltado y con dos mil nodos se nota al pasar el ratón.
+
+---
+
+### D-038 · 2026-09-22 · `keepgarden app`: el motor y el visor en una sola ventana
+
+**Contexto.** Hasta ahora ver evolucionar el jardín eran dos comandos en dos
+ventanas —`run` en una, `dashboard` en otra— y el visor era una foto: no se
+refrescaba solo, así que "verlo en tiempo real" significaba pulsar F5.
+
+**Decisión.** Un comando, `keepgarden app`, que arranca las dos cosas, abre el
+navegador y se refresca solo. Doble clic con `scripts\jardin.bat`.
+
+**Nada de Electron ni Tauri.** Serían cientos de megas y una cadena de build de
+Node dentro de un proyecto Python cuyo stack está cerrado en este mismo
+archivo. Lo que hace falta para que se sienta como una app —un lanzador, una
+ventana, datos que se mueven solos— no necesita ninguna de las dos. Si algún
+día se quiere una ventana nativa sin barra de navegador, es un envoltorio
+encima de esto y no tira nada.
+
+**El motor se queda en el hilo principal y el visor se va a un hilo.** Al revés
+parece más natural y está mal, por dos razones que costaron un rato descubrir:
+
+* **SQLite ata cada conexión al hilo que la abrió.** Con el motor en un hilo
+  secundario, la base abierta en el principal revienta en la primera consulta.
+* **Un error del motor en un hilo secundario no se ve.** En el primer intento
+  se guardaba para reenviarlo al cerrar, así que la app parecía viva y no
+  estaba haciendo nada: el peor fallo posible, porque no se distingue de que el
+  jardín simplemente vaya lento.
+
+Con el motor en el principal, además, Ctrl+C llega donde tiene que llegar. A
+uvicorn hay que desactivarle los manejadores de señal, que sólo funcionan en el
+hilo principal; es la única concesión.
+
+Un escritor y varios lectores sobre el mismo archivo es exactamente para lo que
+está el modo WAL. El visor abre su propia conexión en sólo lectura, una por
+hilo (D-024), y hay un test que corre las dos cosas a la vez para que esto no
+se rompa en silencio.
+
+**Parar tiene que ser inmediato.** `GardenRunner` acepta un `stop_event` que
+mira en cada vuelta del bucle **y usa como reloj**: sin lo segundo, cerrar la
+app en modo vivo esperaría a que terminase el sleep entre velas, que es una
+hora.
+
+**El refresco.** El front pregunta cada 3 s a `/api/pulse` —tres claves de
+`garden_meta` y un recuento— y sólo redibuja cuando el jardín se ha movido de
+verdad. `garden_summary` recorre bots, generaciones y alertas: pedirlo cada tres
+segundos sí se notaría, y por eso la cabecera reaprovecha el que ya pidió la
+portada.
+
+Se congela solo cuando redibujar le quitaría al usuario lo que está mirando: si
+está reproduciendo la genealogía, si hay una ficha de bot abierta, o si ha
+pulsado el indicador. **El indicador dice siempre si lo que se ve es de ahora o
+está congelado**, porque un visor que miente sobre su propia frescura es peor
+que uno que no se refresca.

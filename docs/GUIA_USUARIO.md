@@ -203,6 +203,41 @@ Opciones útiles del dry-run:
 
 ---
 
+## 4b. La aplicación: todo junto y en vivo
+
+Si lo único que quieres es **verlo funcionar**, no hace falta abrir dos
+ventanas. Doble clic en:
+
+```
+scripts\jardin.bat
+```
+
+O desde la consola:
+
+```powershell
+keepgarden app                 # jardín vivo: una vela por hora
+keepgarden app --dry-run       # histórico acelerado, para verlo evolucionar ya
+```
+
+Arranca el motor, levanta el visor, abre el navegador y **se refresca solo**:
+cada tres segundos pregunta si el jardín se ha movido y redibuja sólo cuando
+hay algo nuevo. Arriba a la derecha hay un indicador:
+
+| | |
+|---|---|
+| **● en vivo** | lo que ves es de ahora |
+| **⏸ pausado** | congelado; púlsalo para volver a seguir al jardín |
+
+Se congela solo mientras reproduces la genealogía o tienes abierta la ficha de
+un bot, para no quitarte de delante lo que estás mirando.
+
+Ctrl+C cierra las dos cosas. En modo vivo es inmediato: no espera a que pase la
+hora que falta para la siguiente vela.
+
+**La primera vez usa `--dry-run`.** En vivo verás una vela por hora, que para
+mirar no tiene ninguna gracia; acelerado ves nacer, cruzarse y morir bots en
+minutos.
+
 ## 5. Mirarlo
 
 ```powershell

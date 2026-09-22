@@ -234,6 +234,11 @@ class GardenRunner:
     generation: int = 0
     ticks_done: int = 0
     verbose: bool = True
+    #: Señal para parar desde fuera. La usa ``keepgarden app``, que corre el
+    #: motor en un hilo y el visor en el principal: sin ella, cerrar la app
+    #: tendría que esperar a que terminara el sleep entre velas, que en vivo
+    #: es una hora. Ver docs/DECISIONS.md D-038.
+    stop_event: Any = None
 
     _benchmark_units: dict[str, float] = field(default_factory=dict, repr=False)
     _garden_peak: float = 0.0
@@ -626,6 +631,10 @@ class GardenRunner:
             last_processed_ts=ultimo_ts,
             ticks_in_generation=self._ticks_in_current_generation(),
         )
+        if self.stop_event is not None:
+            # Esperar sobre el evento en vez de sobre el reloj de pared: así
+            # parar es inmediato en cualquier punto de la espera.
+            self.clock.sleep = self.stop_event.wait
         self._window_start_index = max(0, arranque)
 
         self.status = GardenStatus.RUNNING
@@ -642,6 +651,8 @@ class GardenRunner:
         procesados = 0
         try:
             for tick in fuente:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    break
                 self.process_tick(tick)
                 procesados += 1
                 self.ticks_done += 1

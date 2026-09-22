@@ -115,6 +115,51 @@ def jardin(tmp_path: Path, cfg: Config, catalog):
 # --------------------------------------------------------------------------- #
 
 
+def test_el_pulso_dice_si_el_jardin_se_ha_movido(jardin) -> None:
+    """Lo que el front consulta cada pocos segundos para refrescarse solo.
+
+    Tiene que ser barato —tres claves de ``garden_meta`` y un recuento— porque
+    un ``garden_summary`` cada tres segundos sí se notaría. Se escribe por una
+    conexión aparte, que es la situación real: el motor escribe mientras el
+    visor lee.
+    """
+    api, datos = jardin
+    escritor = open_database(datos["ruta"], create=False)
+    try:
+        escritor.set_meta("last_tick_ts", 1_700_000_000_000)
+        escritor.set_meta("status", "RUNNING")
+    finally:
+        escritor.close()
+
+    pulso = api.pulse()
+    assert pulso["last_tick_ts"] == 1_700_000_000_000
+    assert pulso["status"] == "RUNNING"
+    assert pulso["n_alive"] == api.garden_summary()["n_alive"]
+    assert pulso["generation"] == api.current_generation()
+
+    escritor = open_database(datos["ruta"], create=False)
+    try:
+        escritor.set_meta("last_tick_ts", 1_700_000_003_600_000)
+    finally:
+        escritor.close()
+    # Es el único campo que el front compara para decidir si redibuja.
+    assert api.pulse()["last_tick_ts"] != pulso["last_tick_ts"]
+
+
+def test_el_pulso_de_un_jardin_recien_sembrado_no_revienta(jardin) -> None:
+    """Sin un solo tick procesado todavía no hay ``last_tick_ts``."""
+    api, datos = jardin
+    escritor = open_database(datos["ruta"], create=False)
+    try:
+        escritor.execute("DELETE FROM garden_meta WHERE key = 'last_tick_ts'")
+    finally:
+        escritor.close()
+
+    pulso = api.pulse()
+    assert pulso["last_tick_ts"] is None
+    assert pulso["n_alive"] >= 0
+
+
 def test_el_resumen_cuenta_vivos_y_muertos(jardin) -> None:
     api, datos = jardin
     s = api.garden_summary()
