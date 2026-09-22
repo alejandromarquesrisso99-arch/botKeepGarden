@@ -309,7 +309,7 @@ render.lineage = async function () {
         <span class="item"><span class="dot" style="background:${TEXT}"></span>vivo</span>
         <span class="item"><span class="ring"></span>muerto</span>
         <span class="item"><span class="dot" style="background:${MUTED}"></span>jubilado</span>
-        <span class="item">radio ∝ fitness · color = familia de ideas</span>
+        <span class="item">carril y color = familia de ideas · radio ∝ fitness</span>
         <span class="item">— mutación y cruce · - - fusión (varios padres)</span>
         <span class="item">pasa el ratón por un nodo: se resalta su linaje entero; clic abre la ficha</span>
       </div>
@@ -402,48 +402,77 @@ function linajeCompleto(g, id) {
   return vistos;
 }
 
-/** Coloca los nodos: X = generación de nacimiento, Y = carril por linaje.
+/** Coloca los nodos: X = generación de nacimiento, Y = carril por familia.
  *
- * Los carriles van ordenados por tamaño: los linajes que se han reproducido
- * arriba, los fundadores que nunca tuvieron descendencia abajo. Si se ordenan
- * alfabéticamente, la parte interesante del jardín queda repartida entre
- * cuarenta carriles vacíos.
+ * Un carril por linaje era la forma obvia y no funcionaba: un jardín de 60
+ * semillas tiene 60 linajes, casi todos de un solo bot, así que el lienzo eran
+ * sesenta carriles vacíos con los fundadores apilados en una columna a la
+ * izquierda y un eje Y sin etiquetas. Las familias de ideas son siete como
+ * mucho, todas se pueden etiquetar y agrupan por lo que de verdad se quiere
+ * comparar: qué clase de estrategia está ganando.
+ *
+ * El orden es **alfabético a propósito**, no por tamaño. Ordenar por población
+ * hace que los carriles se reordenen solos al mover el slider del tiempo, y la
+ * reproducción de la evolución se convierte en un baile de filas en el que no
+ * se puede seguir nada.
  */
 function disponer(g) {
   // La colocación sólo depende del grafo y se recalcula en cada redibujado del
   // resaltado: con dos mil nodos, memorizarla se nota al pasar el ratón.
   if (g._layout) return g._layout;
   const cuenta = new Map();
-  g.nodes.forEach((n) => cuenta.set(n.lineage, (cuenta.get(n.lineage) || 0) + 1));
-  const carriles = [...cuenta.keys()].sort(
-    (a, b) => cuenta.get(b) - cuenta.get(a) || a.localeCompare(b)
-  );
-  const idx = new Map(carriles.map((l, i) => [l, i]));
-  const grupos = new Map();
+  const linajes = new Set();
   g.nodes.forEach((n) => {
-    const k = `${n.lineage}|${n.generation}`;
-    grupos.set(k, (grupos.get(k) || 0) + 1);
+    cuenta.set(n.family, (cuenta.get(n.family) || 0) + 1);
+    linajes.add(n.lineage);
   });
-  const usados = new Map();
+  const carriles = [...cuenta.keys()].sort((a, b) => a.localeCompare(b));
+  const idx = new Map(carriles.map((l, i) => [l, i]));
+
+  // Los que comparten carril y generación se reparten en vertical dentro del
+  // carril, ordenados por fitness: la columna de fundadores deja de ser una
+  // pila y se lee como un degradado de quién arrancó mejor.
+  const porId = new Map(g.nodes.map((n) => [n.id, n]));
+  const celdas = new Map();
+  g.nodes.forEach((n) => {
+    const k = `${n.family}|${n.generation}`;
+    if (!celdas.has(k)) celdas.set(k, []);
+    celdas.get(k).push(n.id);
+  });
+  // Una sola pasada de orden por celda, y la posición dentro de la celda se
+  // memoriza: buscar el índice con indexOf por cada nodo sería cuadrático, y
+  // esto se recalcula en cada redibujado del resaltado.
+  const posicion = new Map();
+  celdas.forEach((ids) => {
+    ids.sort((a, b) => {
+      const fa = porId.get(a).fitness, fb = porId.get(b).fitness;
+      if (fa == null && fb == null) return a.localeCompare(b);
+      if (fa == null) return -1;
+      if (fb == null) return 1;
+      return fa - fb || a.localeCompare(b);
+    });
+    ids.forEach((id, i) => posicion.set(id, i));
+  });
+
   const puntos = g.nodes.map((n) => {
-    const k = `${n.lineage}|${n.generation}`;
-    const total = grupos.get(k);
-    const i = usados.get(k) || 0;
-    usados.set(k, i + 1);
-    const ancho = Math.min(0.72, 0.16 * total);
+    const total = celdas.get(`${n.family}|${n.generation}`).length;
+    const i = posicion.get(n.id);
+    // Hasta 0.62 de carril: deja un pasillo visible entre familias, que es
+    // lo que hace que se lean como seis grupos y no como una columna.
+    const ancho = total > 1 ? Math.min(0.62, 0.07 * total) : 0;
     const desplazamiento = total === 1 ? 0 : (i / (total - 1) - 0.5) * ancho;
-    // El eje Y crece hacia arriba, así que se invierte el índice: los linajes
-    // que más han criado quedan arriba y los fundadores estériles abajo.
-    const carril = carriles.length - 1 - idx.get(n.lineage);
+    // El eje Y crece hacia arriba, así que se invierte el índice para que el
+    // primer carril quede arriba y el orden se lea como la leyenda.
+    const carril = carriles.length - 1 - idx.get(n.family);
     return { ...n, x: n.generation, y: carril + desplazamiento };
   });
-  g._layout = { carriles, puntos, cuenta };
+  g._layout = { carriles, puntos, cuenta, linajes: linajes.size };
   return g._layout;
 }
 
 function pintarGrafo(g) {
   if (!g) return;
-  const { carriles, puntos, cuenta } = disponer(g);
+  const { carriles, puntos, cuenta, linajes } = disponer(g);
   const info = document.getElementById('lineage-info');
   const resaltado = state.hovered || state.selected;
   const linaje = resaltado ? linajeCompleto(g, resaltado) : null;
@@ -506,7 +535,8 @@ function pintarGrafo(g) {
   const vivos = puntos.filter((n) => n.status_at === 'ALIVE').length;
   info.innerHTML =
     `${puntos.length} bots hasta la generación ${state.until} · ${vivos} vivos en ese momento · ` +
-    `${enlaces.length} vínculos de parentesco · ${carriles.length} linajes` +
+    `${enlaces.length} vínculos de parentesco · ${carriles.length} familias · ` +
+    `${linajes} linajes` +
     (g.collapsed && g.collapsed.length
       ? ` · ${g.collapsed.length} grupos de linajes extintos plegados (límite ${g.node_limit} nodos)`
       : '') +
@@ -538,14 +568,12 @@ function pintarGrafo(g) {
       ...BASE_AXIS, type: 'value', min: -1, max: carriles.length, interval: 1,
       splitLine: { lineStyle: { color: LINE, opacity: 0.3 } },
       axisLabel: {
-        color: MUTED, fontSize: 10.5, hideOverlap: true,
-        // Sólo se etiquetan los linajes con descendencia: los fundadores que
-        // nunca criaron son una fila de carriles de un solo bot.
+        color: MUTED, fontSize: 11, hideOverlap: true,
+        // Ahora se etiquetan todos: siete familias caben y cada una dice algo.
         formatter: (v) => {
-          const linaje = carriles[carriles.length - 1 - v];
-          return Number.isInteger(v) && linaje && cuenta.get(linaje) > 1
-            ? shortLineage(linaje)
-            : '';
+          const familia = carriles[carriles.length - 1 - v];
+          if (!Number.isInteger(v) || !familia) return '';
+          return `${familia.toLowerCase()}  ${cuenta.get(familia)}`;
         },
       },
     },

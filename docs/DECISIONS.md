@@ -801,3 +801,36 @@ Mientras tanto conviene leer la mediana de fitness como **un ranking interno de
 cada generación**, no como una medida de si el jardín mejora con el tiempo. Lo
 que sí es comparable entre generaciones es la curva de capital y el alfa contra
 el benchmark.
+
+---
+
+### D-037 · 2026-09-22 · La genealogía se ordena por familia, no por linaje
+
+**Contexto.** Un carril por linaje era la lectura obvia del árbol genealógico y
+no funcionaba. Un jardín de 60 semillas tiene 60 linajes, casi todos de un solo
+bot: el lienzo eran sesenta carriles vacíos, los fundadores apilados en una
+columna a la izquierda y un eje Y con cuatro etiquetas de sesenta. La vista que
+el CLAUDE.md llama "la mitad del producto" era técnicamente correcta e
+ilegible.
+
+Había además un problema que sólo se ve moviendo el slider: los carriles se
+ordenaban **por población**, así que se reordenaban solos al avanzar el tiempo
+y la reproducción de la evolución era un baile de filas en el que no se podía
+seguir ningún linaje.
+
+**Decisión.** El carril pasa a ser la **familia de ideas**: son siete como
+mucho, todas caben etiquetadas con su población, y agrupan por lo que de verdad
+se quiere comparar — qué clase de estrategia está ganando. El linaje no se
+pierde: sigue en el tooltip, en el filtro y en el resaltado al pasar el ratón,
+que es donde se consulta un linaje concreto.
+
+El orden es **alfabético a propósito**, no por tamaño: un orden estable es lo
+que permite seguir la reproducción. Dentro de cada carril, los bots que
+comparten generación se reparten en vertical ordenados por fitness —la columna
+de fundadores se lee como un degradado de quién arrancó mejor— ocupando como
+mucho 0,62 del carril, para que quede pasillo entre familias.
+
+**Consecuencias.** De 61 carriles con 4 etiquetas a 6 carriles con 6. Las
+flechas de descendencia se leen por familia y los carriles no se mueven al
+reproducir. La colocación se memoriza por grafo, porque se recalcula en cada
+redibujado del resaltado y con dos mil nodos se nota al pasar el ratón.
